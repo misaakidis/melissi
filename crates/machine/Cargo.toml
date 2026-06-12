@@ -1,0 +1,8 @@
+[package]
+name = "melissi-machine"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "pullstate: the optimal pull-sync scheduling machine, a 1:1 refinement of PullSyncerE.tla"
+
+[dependencies]
