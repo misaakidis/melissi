@@ -13,7 +13,7 @@
 //! discharged by `&mut self` (a single-owner machine cannot exhibit the
 //! check/mark split), which is the point of `PullSyncerNA`.
 
-use melissi_machine::explore::{explore, Act, Report, Scenario};
+use melissi_machine::explore::{explore, Report, Scenario};
 use melissi_machine::Config;
 
 const ALL_ON: Config = Config {

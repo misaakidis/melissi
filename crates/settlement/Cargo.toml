@@ -1,0 +1,8 @@
+[package]
+name = "melissi-settlement"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "interval settlement: settle before you forget — a refinement of IntervalSettlement.tla"
+
+[dependencies]

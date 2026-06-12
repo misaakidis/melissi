@@ -13,11 +13,11 @@ parity tests re-check the same ablation matrix on the shipped code.
 
 | crate | refines | status |
 |---|---|---|
-| `crates/machine` | `PullSyncerE.tla` — the pull-sync scheduling machine | M0 |
-| `crates/settlement` | `IntervalSettlement.tla` — settle before you forget | planned |
-| `crates/node` | the sans-io node core (events → effects) | planned |
-| `crates/sim` | deterministic self-play harness, k symmetric nodes | planned |
-| `crates/wire` | protobuf + libp2p + the bee-wire adapter | later |
+| `crates/machine` | `PullSyncerE.tla` — the pull-sync scheduling machine | M0 ✓ |
+| `crates/settlement` | `IntervalSettlement.tla` — settle before you forget; the interval is a `u64` high-water, so eager advance and disconnected ranges are unrepresentable | M1 ✓ |
+| `crates/node` | the sans-io node core (events → effects); want-by-reference, one open offer per `(peer, bin)`, settlement the only durable transition | M1 ✓ |
+| `crates/sim` | deterministic self-play harness, k symmetric nodes | M2 |
+| `crates/wire` | protobuf + libp2p + the bee-wire adapter (positional bitvector, re-offer) | later |
 
 ## Verification
 

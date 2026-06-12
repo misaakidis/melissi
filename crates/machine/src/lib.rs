@@ -334,6 +334,25 @@ impl PullState {
         self.want.values().filter(|s| s.contains(&p)).count()
     }
 
+    /// The triples `p` currently has in-flight claims on (for peer departure:
+    /// each becomes a `lose_holder`, releasing the claim with no bar).
+    pub fn claims_of(&self, p: PeerId) -> Vec<Triple> {
+        self.want
+            .iter()
+            .filter(|(_, ps)| ps.contains(&p))
+            .map(|(&c, _)| c)
+            .collect()
+    }
+
+    /// The triples `p` is currently observed to hold.
+    pub fn held_by(&self, p: PeerId) -> Vec<Triple> {
+        self.holders
+            .iter()
+            .filter(|(_, ps)| ps.contains(&p))
+            .map(|(&c, _)| c)
+            .collect()
+    }
+
     /// All enabled `Want(c, p)` — the model's nondeterminism, for policy
     /// (node crate) or exhaustive exploration (explorer) to resolve.
     pub fn enabled_wants(&self) -> Vec<(Triple, PeerId)> {
