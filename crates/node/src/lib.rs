@@ -152,7 +152,12 @@ impl Node {
                 self.offer_open.remove(&(peer, bin));
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
                 let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
-                log.cover(topmost);
+                // An answer covers at least what was asked: a hostile
+                // under-stated Topmost must not leave next() > covered, or
+                // the round re-justifies itself and the advertisement loops
+                // (OfferPacing: credits are granted by transitions, and an
+                // answer must close the tail it was emitted for).
+                log.cover(topmost.max(start));
 
                 // Churn-out detection: an entry of this window inside the
                 // covered range that the fresh offer no longer names is no
