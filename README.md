@@ -16,7 +16,7 @@ parity tests re-check the same ablation matrix on the shipped code.
 | `crates/machine` | `PullSyncerE.tla` — the pull-sync scheduling machine | M0 ✓ |
 | `crates/settlement` | `IntervalSettlement.tla` — settle before you forget; the interval is a `u64` high-water, so eager advance and disconnected ranges are unrepresentable | M1 ✓ |
 | `crates/node` | the sans-io node core (events → effects); want-by-reference, one open offer per `(peer, bin)`, settlement the only durable transition | M1 ✓ |
-| `crates/sim` | deterministic self-play harness, k symmetric nodes | M2 |
+| `crates/sim` | deterministic self-play: k symmetric nodes over a seeded network; the floors measured — Θ-REP, exact network delivery floor, serve balance max−min ≤ 1, LIVE spread, small-gap re-sync | M2 ✓ |
 | `crates/wire` | protobuf + libp2p + the bee-wire adapter (positional bitvector, re-offer) | later |
 
 ## Verification

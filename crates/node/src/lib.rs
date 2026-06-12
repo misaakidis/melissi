@@ -90,6 +90,25 @@ pub struct Node {
     bin_of: BTreeMap<Triple, Bin>,
     /// One open offer per (peer, bin) — the live subscription discipline.
     offer_open: BTreeSet<(PeerId, Bin)>,
+    /// Cumulative fetch assignments per peer — the routing key. Policy state
+    /// only (provably-neutral): the §5.3 fairness floor is about REALISED
+    /// serve totals, and outstanding load alone is history-blind — it
+    /// balances within a wave but skews across waves (deeper bins schedule
+    /// first). Outstanding load (`m.load`) stays as the tiebreak.
+    assigned: BTreeMap<PeerId, u64>,
+    /// The discovery barrier (design §5.6: receive every neighbour's
+    /// advertisements, record the holders per chunk — THEN fetch). A
+    /// `(peer, bin)` resolves when its first offer answers, or already at
+    /// `GetCursors` when the peer has nothing in the HIST range. Scheduling a
+    /// bin before every peer resolved would hand the whole backlog to
+    /// whichever peer answered first — the fairness floor (O5) needs the
+    /// choice set assembled before routing chooses.
+    hist_resolved: BTreeSet<(PeerId, Bin)>,
+    /// Peers whose cursors have arrived. Readiness must quantify over every
+    /// KNOWN peer, not every peer whose cursors happen to have landed —
+    /// else the first peer through discovery looks like the whole choice set
+    /// and receives the whole wave.
+    cursored: BTreeSet<PeerId>,
 }
 
 impl Node {
@@ -102,7 +121,15 @@ impl Node {
             logs: BTreeMap::new(),
             bin_of: BTreeMap::new(),
             offer_open: BTreeSet::new(),
+            assigned: BTreeMap::new(),
+            hist_resolved: BTreeSet::new(),
+            cursored: BTreeSet::new(),
         }
+    }
+
+    /// The ReserveHas view at sync start: `c` is already held.
+    pub fn preload(&mut self, c: Triple) -> bool {
+        self.m.preload(c)
     }
 
     /// The single entry point: ingest one event, return the effects.
@@ -129,11 +156,14 @@ impl Node {
                 self.logs.retain(|&(q, _), _| q != p);
                 self.cursors.retain(|&(q, _), _| q != p);
                 self.offer_open.retain(|&(q, _)| q != p);
+                self.hist_resolved.retain(|&(q, _)| q != p);
+                self.cursored.remove(&p);
                 // released claims may be re-routable right away
                 self.round(None)
             }
 
             Event::CursorsResult { peer, cursors } => {
+                self.cursored.insert(peer);
                 let mut fx = Vec::new();
                 for (bin, head) in cursors {
                     if bin < self.radius {
@@ -141,6 +171,11 @@ impl Node {
                     }
                     self.cursors.insert((peer, bin), head);
                     let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
+                    if head < log.next() {
+                        // nothing in the HIST range: resolved without an
+                        // answer (the standing offer is the LIVE tail)
+                        self.hist_resolved.insert((peer, bin));
+                    }
                     if self.offer_open.insert((peer, bin)) {
                         fx.push(Effect::Offer { peer, bin, start: log.next() });
                     }
@@ -150,6 +185,7 @@ impl Node {
 
             Event::OfferResult { peer, bin, start, refs, topmost } => {
                 self.offer_open.remove(&(peer, bin));
+                self.hist_resolved.insert((peer, bin));
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
                 let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
                 // An answer covers at least what was asked: a hostile
@@ -267,7 +303,14 @@ impl Node {
         //    wants, so it can break nothing (provably-neutral).
         let mut batches: BTreeMap<(PeerId, Bin), Vec<Triple>> = BTreeMap::new();
         loop {
-            let enabled = self.m.enabled_wants();
+            // the discovery barrier: route only within bins whose choice set
+            // is assembled — every peer for the bin answered (or had nothing)
+            let enabled: Vec<(Triple, PeerId)> = self
+                .m
+                .enabled_wants()
+                .into_iter()
+                .filter(|(c, _)| self.bin_ready(self.bin_of.get(c).copied().unwrap_or(0)))
+                .collect();
             if enabled.is_empty() {
                 break;
             }
@@ -277,21 +320,34 @@ impl Node {
                 .map(|e @ (c, _)| (e, (self.bin_of.get(c).copied().unwrap_or(0), *c)))
                 .max_by_key(|&(_, (bin, c))| (bin, std::cmp::Reverse(c)))
                 .unwrap();
-            // least-loaded among c's enabled holders; peer id tiebreak
+            // least-assigned among c's enabled holders (realised totals —
+            // the §5.3 floor), outstanding load then peer id as tiebreaks
             let p = enabled
                 .iter()
                 .filter(|&&(d, _)| d == c)
                 .map(|&(_, p)| p)
-                .min_by_key(|&p| (self.m.load(p), p))
+                .min_by_key(|&p| (self.assigned.get(&p).copied().unwrap_or(0), self.m.load(p), p))
                 .unwrap();
             let ok = self.m.want(c, p);
             debug_assert!(ok, "policy chose a disabled want");
+            *self.assigned.entry(p).or_default() += 1;
             batches.entry((p, self.bin_of.get(&c).copied().unwrap_or(0))).or_default().push(c);
         }
         for ((peer, bin), want) in batches {
             fx.push(Effect::Fetch { peer, bin, want });
         }
         fx
+    }
+
+    /// The choice set for this bin is assembled: every known peer has
+    /// reported cursors, and every peer that lists the bin has resolved its
+    /// HIST range (answered, or had nothing to offer).
+    fn bin_ready(&self, bin: Bin) -> bool {
+        self.peers.iter().all(|&p| {
+            self.cursored.contains(&p)
+                && (!self.cursors.contains_key(&(p, bin))
+                    || self.hist_resolved.contains(&(p, bin)))
+        })
     }
 
     // --- observability ---------------------------------------------------------

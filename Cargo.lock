@@ -17,3 +17,12 @@ dependencies = [
 [[package]]
 name = "melissi-settlement"
 version = "0.1.0"
+
+[[package]]
+name = "melissi-sim"
+version = "0.1.0"
+dependencies = [
+ "melissi-machine",
+ "melissi-node",
+ "melissi-settlement",
+]

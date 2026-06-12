@@ -1,0 +1,146 @@
+//! The quantitative floors, measured — across the k ∈ [2, 8] envelope and a
+//! sweep of adversarial message orderings (seeds). What TLC proved per node,
+//! the sim measures for the composition:
+//!
+//!   O1/Θ-REP  every node converges to the full reserve
+//!   O3        Σ deliveries = Σ initial deficits, EXACTLY — through omission
+//!             and spurious misses (failed attempts are retries, never
+//!             deliveries: the floor is robust, not just average-case)
+//!   O5        free-choice routing balances realised serve totals to within
+//!             one chunk (the Graham/free-choice exactness of design §5.3)
+//!   LIVE      a post-start arrival at one node spreads to all
+
+use melissi_sim::{bin_of, Sim, Triple};
+
+const M: u32 = 24;
+
+fn universe() -> Vec<Triple> {
+    (0..M).collect()
+}
+
+/// Cold start: one empty node joins k−1 full ones. The headline scenario —
+/// the empty node fetches each chunk exactly once, spread evenly.
+#[test]
+fn cold_start_floors_across_k_and_seeds() {
+    for k in [2usize, 4, 8] {
+        for seed in 0..5u64 {
+            let mut sim = Sim::new(k, &[], seed);
+            for i in 1..k {
+                for c in universe() {
+                    sim.seed(i, c);
+                }
+            }
+            sim.start();
+            sim.run();
+
+            sim.assert_converged(&universe());
+            // the delivery floor, exactly: M fetches for M missing chunks
+            assert_eq!(sim.deliveries(0), M as u64, "k={k} seed={seed}");
+            for i in 1..k {
+                assert_eq!(sim.deliveries(i), 0, "full node {i} fetched");
+            }
+            // the fairness floor: realised serve totals within one chunk
+            let served: Vec<u64> = (1..k).map(|i| sim.served[i]).collect();
+            let (max, min) = (*served.iter().max().unwrap(), *served.iter().min().unwrap());
+            assert_eq!(served.iter().sum::<u64>(), M as u64);
+            assert!(max - min <= 1, "k={k} seed={seed}: serve skew {served:?}");
+        }
+    }
+}
+
+/// Θ-REP from scattered origins: each chunk starts on exactly one node and
+/// must reach all k — the all-to-all epidemic, with spurious misses thrown
+/// in. The floor stays exact: misses are retries, not deliveries.
+#[test]
+fn epidemic_reaches_theta_rep_at_the_delivery_floor() {
+    let k = 4usize;
+    for seed in 0..5u64 {
+        let mut sim = Sim::new(k, &[], seed);
+        for c in universe() {
+            sim.seed(c as usize % k, c);
+        }
+        sim.spurious_budget = 3;
+        sim.start();
+        sim.run();
+
+        sim.assert_converged(&universe());
+        let total: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
+        assert_eq!(total, (k as u64 - 1) * M as u64, "seed={seed}: network delivery floor");
+        let served: u64 = sim.served.iter().sum();
+        assert_eq!(served, (k as u64 - 1) * M as u64);
+    }
+}
+
+/// Omission at scale: a Byzantine peer advertises everything and serves
+/// nothing. The empty node still converges at the floor; the omitter serves
+/// zero; the honest servers carry the load.
+#[test]
+fn byzantine_omitter_costs_rounds_not_the_floor() {
+    for seed in 0..5u64 {
+        let mut sim = Sim::new(4, &[3], seed);
+        for i in 1..4 {
+            for c in universe() {
+                sim.seed(i, c);
+            }
+        }
+        sim.start();
+        sim.run();
+
+        sim.assert_converged(&universe());
+        assert_eq!(sim.deliveries(0), M as u64, "seed={seed}");
+        assert_eq!(sim.served[3], 0, "the omitter served nothing");
+        assert_eq!(sim.served[1] + sim.served[2], M as u64);
+    }
+}
+
+/// Freshness, composed: after convergence, uploads land at single nodes —
+/// LIVE to every peer (BinIDs past all cursor snapshots) — and spread
+/// through the standing tail offers without any new round-trip setup.
+#[test]
+fn live_arrivals_spread_to_all_nodes() {
+    let k = 4usize;
+    let mut sim = Sim::new(k, &[], 7);
+    for c in universe() {
+        sim.seed(c as usize % k, c);
+    }
+    sim.start();
+    sim.run();
+    sim.assert_converged(&universe());
+    let before: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
+
+    // two uploads land at different nodes, in different bins
+    sim.arrive(0, 100);
+    sim.arrive(2, 101);
+    assert_ne!(bin_of(100), bin_of(101));
+    sim.run();
+
+    for i in 0..k {
+        assert!(sim.node_has(i, 100) && sim.node_has(i, 101), "node {i} missing a LIVE chunk");
+        assert_eq!(sim.deficit(i), 0);
+    }
+    let after: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
+    assert_eq!(after - before, 2 * (k as u64 - 1), "LIVE spread at the floor");
+    sim.assert_invariants();
+}
+
+/// Small-gap re-sync: a returning node misses only a few chunks — the other
+/// regime the design names (g ≪ M). The floor holds at the gap size.
+#[test]
+fn small_gap_resync_fetches_only_the_gap() {
+    for seed in 0..5u64 {
+        let mut sim = Sim::new(3, &[], seed);
+        let gap: Vec<Triple> = vec![5, 11, 17];
+        for c in universe() {
+            sim.seed(1, c);
+            sim.seed(2, c);
+            if !gap.contains(&c) {
+                sim.seed(0, c); // the returning node holds all but the gap
+            }
+        }
+        sim.start();
+        sim.run();
+
+        sim.assert_converged(&universe());
+        assert_eq!(sim.deliveries(0), gap.len() as u64, "seed={seed}: fetch the gap, only");
+    }
+}

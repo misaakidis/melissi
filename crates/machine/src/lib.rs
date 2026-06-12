@@ -90,8 +90,11 @@ pub struct PullState {
     pub(crate) assign: BTreeMap<Triple, PeerId>,
     /// Tripwire: latched on any double delivery. Must never fire (ConflictFree).
     pub(crate) conflict: bool,
-    /// Tripwire: deliveries so far. Must equal |got| (DeliveryFloor).
+    /// Tripwire: deliveries so far. With `npre`, must equal |got| (DeliveryFloor).
     pub(crate) ndeliv: u32,
+    /// Entries held before sync began — the ReserveHas view at Init. Never
+    /// delivered, never owed: `DeliveryFloor` is `ndeliv + npre = |got|`.
+    pub(crate) npre: u32,
 }
 
 fn set_insert(map: &mut BTreeMap<Triple, BTreeSet<PeerId>>, c: Triple, p: PeerId) -> bool {
@@ -129,6 +132,20 @@ impl PullState {
             assign: BTreeMap::new(),
             conflict: false,
             ndeliv: 0,
+            npre: 0,
+        }
+    }
+
+    /// The ReserveHas view at sync start: `c` is already held — terminal from
+    /// the first offer, never owed, never fetched. (In the model, pre-held
+    /// entries simply never *arrive*; this is the implementation's `got`
+    /// backing for them.)
+    pub fn preload(&mut self, c: Triple) -> bool {
+        if self.got.insert(c) {
+            self.npre += 1;
+            true
+        } else {
+            false
         }
     }
 
@@ -380,8 +397,8 @@ impl PullState {
         if self.conflict {
             return Err("ConflictFree");
         }
-        // DeliveryFloor: deliveries = chunks stored (the O3 floor).
-        if self.ndeliv as usize != self.got.len() {
+        // DeliveryFloor: deliveries + preloaded = chunks stored (the O3 floor).
+        if (self.ndeliv + self.npre) as usize != self.got.len() {
             return Err("DeliveryFloor");
         }
         // DedupInv: at most one in-flight claim per triple.
