@@ -18,4 +18,5 @@
 //! [`adapter::SyntheticCodec`] without touching the core or the framing.
 
 pub mod adapter;
+pub mod codec;
 pub mod pb;
