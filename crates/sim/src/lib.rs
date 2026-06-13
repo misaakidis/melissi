@@ -22,7 +22,7 @@
 //! node stores immediately extends its own bin log — the epidemic channel
 //! (`Gain` in `PullSyncerE`) by which holder sets grow.
 
-use melissi_node::{Bin, Effect, Event, Node, Outcome};
+use melissi_node::{Bin, Effect, Event, Node, Outcome, Policy};
 use melissi_settlement::BinId;
 // re-exported: `Triple` is in the sim's public surface (bin_of, Sim methods)
 pub use melissi_types::{PeerId, Triple};
@@ -86,9 +86,16 @@ fn splitmix(s: &mut u64) -> u64 {
 
 impl Sim {
     pub fn new(k: usize, byzantine: &[usize], seed: u64) -> Self {
+        Self::with_policy(k, byzantine, seed, Policy::SHIPPED)
+    }
+
+    /// As [`Sim::new`], with the floor-achieving policy chosen explicitly — the
+    /// fairness ablations construct nodes with a knob off and assert the O5
+    /// floor breaks (the negatives matching the gate-critical TLA ablations).
+    pub fn with_policy(k: usize, byzantine: &[usize], seed: u64, policy: Policy) -> Self {
         let nodes = (0..k)
             .map(|i| SimNode {
-                puller: Node::new(melissi_machine::Config::PRODUCTION, RADIUS),
+                puller: Node::with_policy(melissi_machine::Config::PRODUCTION, RADIUS, policy),
                 byzantine: byzantine.contains(&i),
                 reserve: BTreeMap::new(),
                 index: BTreeSet::new(),

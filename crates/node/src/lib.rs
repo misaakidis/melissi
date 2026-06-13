@@ -82,9 +82,37 @@ pub enum Effect {
     Settled { peer: PeerId, bin: Bin, upto: BinId },
 }
 
+/// The floor-achieving policy knobs (design §5.3, §5.6). Provably correctness-
+/// neutral — they only choose among already-enabled `Want`s — so unlike the
+/// machine's `Config` they break no safety/liveness property. They exist so
+/// the sim can *ablate* them and measure the O5 fairness floor breaking, the
+/// way the gate-critical mechanisms are ablated in TLA. Ship [`Policy::SHIPPED`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Policy {
+    /// Route on cumulative realised assignments (true) vs outstanding load
+    /// only (false). Outstanding-only is history-blind: balanced within a
+    /// scheduling wave, skewed across waves — the `[6,6,12]` ablation.
+    pub cumulative_routing: bool,
+    /// Wait for the choice set to assemble before routing a bin (true), vs
+    /// schedule eagerly off whoever answered first (false) — which hands the
+    /// whole backlog to the first peer through discovery.
+    pub discovery_barrier: bool,
+}
+
+impl Policy {
+    pub const SHIPPED: Policy = Policy { cumulative_routing: true, discovery_barrier: true };
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self::SHIPPED
+    }
+}
+
 /// The node core. Pure; one owner; all mutation through the machine's actions.
 pub struct Node {
     m: PullState,
+    policy: Policy,
     radius: Bin,
     peers: BTreeSet<PeerId>,
     /// HIST/LIVE boundary per (peer, bin), from `GetCursors`.
@@ -106,8 +134,15 @@ pub struct Node {
 
 impl Node {
     pub fn new(cfg: Config, radius: Bin) -> Self {
+        Self::with_policy(cfg, radius, Policy::SHIPPED)
+    }
+
+    /// As [`Node::new`], with the floor-achieving policy chosen explicitly —
+    /// the sim uses this to ablate fairness (see `Policy`).
+    pub fn with_policy(cfg: Config, radius: Bin, policy: Policy) -> Self {
         Node {
             m: PullState::new(cfg),
+            policy,
             radius,
             peers: BTreeSet::new(),
             cursors: BTreeMap::new(),
@@ -299,6 +334,9 @@ impl Node {
                 .enabled_wants()
                 .into_iter()
                 .filter(|(c, _)| {
+                    if !self.policy.discovery_barrier {
+                        return true; // ablation: schedule before the choice set assembles
+                    }
                     let bin = self.bin_of.get(c).copied().unwrap_or(0);
                     self.disc.bin_ready(bin, self.peers.iter().copied(), |p| {
                         self.cursors.contains_key(&(p, bin))
@@ -320,7 +358,16 @@ impl Node {
                 .iter()
                 .filter(|&&(d, _)| d == c)
                 .map(|&(_, p)| p)
-                .min_by_key(|&p| (self.assigned.get(&p).copied().unwrap_or(0), self.m.load(p), p))
+                .min_by_key(|&p| {
+                    // realised totals first (the §5.3 floor); the ablation
+                    // drops them, leaving history-blind outstanding load
+                    let realised = if self.policy.cumulative_routing {
+                        self.assigned.get(&p).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (realised, self.m.load(p), p)
+                })
                 .unwrap();
             let ok = self.m.want(c, p);
             debug_assert!(ok, "policy chose a disabled want");

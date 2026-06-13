@@ -10,6 +10,7 @@
 //!             one chunk (the Graham/free-choice exactness of design §5.3)
 //!   LIVE      a post-start arrival at one node spreads to all
 
+use melissi_node::Policy;
 use melissi_sim::{bin_of, Sim, Triple};
 
 const M: u32 = 24;
@@ -143,4 +144,72 @@ fn small_gap_resync_fetches_only_the_gap() {
         sim.assert_converged(&universe());
         assert_eq!(sim.deliveries(0), gap.len() as u64, "seed={seed}: fetch the gap, only");
     }
+}
+
+// --- fairness ablations: the O5 floor is floor-achieving, not gate-critical,
+//     so removing a policy keeps CORRECTNESS (still converges, each chunk
+//     once) but breaks the BALANCE. These are the negatives that make the
+//     fairness mechanisms falsifiable, matching the gate-critical TLA
+//     ablations — the property lives in the sim, where it is observable, not
+//     in TLA, where a distributional floor cannot be expressed. -------------
+
+/// Ablate cumulative routing (outstanding-load-only — history-blind). The
+/// cold-start backlog still converges at the delivery floor, but serve load
+/// skews across scheduling waves on a measurable fraction of message
+/// orderings: ~11/40 seeds, worst `[11,7,6]` (skew 5) — the `[6,6,12]` class
+/// the M2 cumulative-routing fix removed. The shipped policy holds
+/// max−min ≤ 1 on every seed (`cold_start_floors_across_k_and_seeds`); this
+/// is the matching negative. The 0..40 range is deterministic — the skew it
+/// catches is fixed, not flaky.
+#[test]
+fn outstanding_only_routing_breaks_the_fairness_floor() {
+    let off = Policy { cumulative_routing: false, discovery_barrier: true };
+    let mut skewed = 0;
+    for seed in 0..40u64 {
+        let mut sim = Sim::with_policy(4, &[], seed, off);
+        for i in 1..4 {
+            for c in universe() {
+                sim.seed(i, c);
+            }
+        }
+        sim.start();
+        sim.run();
+        // correctness survives — fairness is floor-achieving, not gate-critical
+        sim.assert_converged(&universe());
+        assert_eq!(sim.deliveries(0), M as u64);
+        let served: Vec<u64> = (1..4).map(|i| sim.served[i]).collect();
+        assert_eq!(served.iter().sum::<u64>(), M as u64);
+        let (max, min) = (*served.iter().max().unwrap(), *served.iter().min().unwrap());
+        if max - min > 1 {
+            skewed += 1;
+        }
+    }
+    assert!(skewed > 0, "outstanding-only routing must skew serve load on some ordering");
+}
+
+/// Ablate the discovery barrier (schedule before the choice set assembles).
+/// Still converges, but the first peer through discovery is treated as the
+/// whole choice set and is handed a disproportionate share — the floor breaks.
+#[test]
+fn no_discovery_barrier_breaks_the_fairness_floor() {
+    let off = Policy { cumulative_routing: true, discovery_barrier: false };
+    let mut found_skew = false;
+    for seed in 0..5u64 {
+        let mut sim = Sim::with_policy(4, &[], seed, off);
+        for i in 1..4 {
+            for c in universe() {
+                sim.seed(i, c);
+            }
+        }
+        sim.start();
+        sim.run();
+        sim.assert_converged(&universe());
+        assert_eq!(sim.deliveries(0), M as u64);
+        let served: Vec<u64> = (1..4).map(|i| sim.served[i]).collect();
+        let (max, min) = (*served.iter().max().unwrap(), *served.iter().min().unwrap());
+        if max - min > 1 {
+            found_skew = true;
+        }
+    }
+    assert!(found_skew, "no discovery barrier must skew serve load on some seed");
 }
