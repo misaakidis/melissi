@@ -1,19 +1,51 @@
-//! bee's postage stamp — secp256k1 signature validation, reproduced exactly,
-//! so a stamp that bee accepts melissi accepts and one bee rejects melissi
-//! rejects. This is the *entry-fault* half of self-verification (the §11/§12
-//! accountable entry): content self-verifies by hash (`bmt`), payment
-//! self-verifies by signature (here). An invalid stamp is invalid identically
-//! at every holder, which is exactly why a `Rejected` settles globally.
+//! Postage stamp — secp256k1 signature validation. The *entry-fault* half of
+//! self-verification (the §11/§12 accountable entry): content self-verifies by
+//! hash (`bmt`), payment self-verifies by signature (here). An invalid stamp is
+//! invalid identically at every holder, which is why a `Rejected` settles
+//! globally.
 //!
-//! Chain (bee `pkg/postage/stamp.go` + `pkg/crypto`):
-//!   stamp = batchID(32) ‖ index(8) ‖ timestamp(8) ‖ sig(65)
-//!   digest = keccak256(chunkAddr ‖ batchID ‖ index ‖ timestamp)
-//!   signed = keccak256("\x19Ethereum Signed Message:\n32" ‖ digest)  (eth prefix)
+//! **Wire/schema = bee, noted where it diverges from the spec.** A stamp's
+//! bytes and signing scheme are an interop contract with the live network and
+//! the on-chain postage contract, so this follows bee's *deployed* scheme, not
+//! the formal spec's prose. The scheme (bee `pkg/postage` + `pkg/crypto`):
+//!   stamp  = batchID(32) ‖ index(8) ‖ timestamp(8) ‖ sig(65)        [113 bytes]
+//!   digest = keccak256(chunkAddr ‖ batchID ‖ index ‖ timestamp)     (ToSignDigest)
+//!   signed = keccak256("\x19Ethereum Signed Message:\n32" ‖ digest) (the eth
+//!            prefix bee's generic signer applies to Sign AND Recover — verified
+//!            symmetric in pkg/crypto/signer.go; not a stray artifact)
 //!   owner  = ethAddress(secp256k1_recover(sig, signed))
-//!   valid  ⟺ owner == the batch's owner address
+//!   sig    = recoverable [r‖s‖v], v last (bee's layout, = witness type 0).
 //!
-//! The signature is recoverable [r‖s‖v], v the 1-byte recovery id last (bee's
-//! layout). `ethAddress(pub) = keccak256(pub_uncompressed[1..])[12..]`.
+//! The eth prefix is *shared* bee signing infrastructure — postage stamps,
+//! single-owner chunks, and the handshake all sign through the same
+//! `defaultSigner` / `crypto.Recover`. What distinguishes them is only the
+//! *digest*: postage signs `keccak(addr ‖ batchID ‖ index ‖ timestamp)`, SOC
+//! signs `keccak(id ‖ address)`. This module is the postage digest; a future
+//! SOC module reuses the same prefix over its own digest (do not mistake the
+//! prefix for postage-specific).
+//!
+//! **Divergence from spec §2.4.1.** The spec's ECDSA witness signs
+//! `concat(preamble_constant, chunk_hash, batch_reference, valid_until_date)`;
+//! bee signs `ethPrefix ‖ keccak(addr ‖ batchID ‖ index ‖ timestamp)` — a
+//! different preamble (the eth prefix) and `index`+`timestamp` rather than a
+//! `valid_until` field. Where spec text and the deployed contract disagree, the
+//! contract (what mainnet enforces) wins for interop; bee matches it, so melissi
+//! matches bee. Recorded here, not silently inherited.
+//!
+//! **Verification status.** The signing scheme is verified by *reading* bee, and
+//! [`tests::eth_address_matches_ethereum_vector`] pins `ethAddress` + recovery
+//! against the canonical Ethereum key vector. Full byte-interop with a
+//! bee-produced stamp is NOT yet vector-checked (bee's own tests are round-trip
+//! with random keys — no static vector exists); that needs a live or generated
+//! bee stamp and is the one remaining unknown for mainnet stamp interop.
+//!
+//! **Validation is partial (spec Def 19, future work).** `V^STAMP` =
+//! AUTHENTIC ∧ ALIVE ∧ AUTHORISED ∧ AVAILABLE ∧ ALIGNED. [`valid`] checks only
+//! AUTHORISED (the signature recovers the batch owner). AUTHENTIC (batch exists
+//! on-chain), ALIVE (balance > 0), AVAILABLE (index < batch size), and ALIGNED
+//! (bucket depth) require blockchain state and belong to a chain-connected
+//! layer. So a forged stamp is caught; an expired/over-issued/misaligned one is
+//! not — that is deferred, not handled here.
 
 use crate::bmt::keccak;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
@@ -131,6 +163,20 @@ mod tests {
     fn owner_of(key: &SigningKey) -> [u8; 20] {
         let vk = key.verifying_key();
         eth_address(vk.to_encoded_point(false).as_bytes())
+    }
+
+    /// `eth_address` against the canonical Ethereum vector: the secp256k1
+    /// private key `1` yields address `0x7e5f4552091a69125d5dfcb7b8c2659029395bdf`.
+    /// This pins the address derivation (keccak(pubkey[1..])[12..]) to the
+    /// Ethereum standard bee follows — an external vector, not a round-trip.
+    #[test]
+    fn eth_address_matches_ethereum_vector() {
+        let mut sk = [0u8; 32];
+        sk[31] = 1;
+        let key = SigningKey::from_bytes(&sk.into()).unwrap();
+        let addr = eth_address(key.verifying_key().to_encoded_point(false).as_bytes());
+        let hex: String = addr.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "7e5f4552091a69125d5dfcb7b8c2659029395bdf");
     }
 
     /// A correctly-signed stamp validates; round-trip through bee's exact
