@@ -48,12 +48,21 @@ fn scenario(name: &'static str) -> Scenario {
 }
 
 fn assert_positive(r: &Report, tlc_states: usize) {
-    assert!(r.violation.is_none(), "{}: invariant violated: {:?}", r.name, r.violation);
+    assert!(
+        r.violation.is_none(),
+        "{}: invariant violated: {:?}",
+        r.name,
+        r.violation
+    );
     assert_eq!(r.incomplete_terminals, 0, "{}: incomplete terminal", r.name);
     assert_eq!(r.unfresh_terminals, 0, "{}: unfresh terminal", r.name);
     assert!(!r.has_cycle, "{}: livelock cycle", r.name);
     assert!(r.terminals > 0, "{}: no terminal state", r.name);
-    assert_eq!(r.states, tlc_states, "{}: state count diverges from TLC", r.name);
+    assert_eq!(
+        r.states, tlc_states,
+        "{}: state count diverges from TLC",
+        r.name
+    );
 }
 
 // --- positives (mirroring Table A1) -----------------------------------------
@@ -143,7 +152,12 @@ fn storm() {
     let mut sc = scenario("storm");
     sc.chunks = &[1, 2, 3, 4];
     sc.peers = &[1, 2, 3, 4];
-    sc.holds = &[(1, &[1, 2, 4]), (2, &[2, 3, 4]), (3, &[3, 4]), (4, &[1, 2, 3, 4])];
+    sc.holds = &[
+        (1, &[1, 2, 4]),
+        (2, &[2, 3, 4]),
+        (3, &[3, 4]),
+        (4, &[1, 2, 3, 4]),
+    ];
     sc.byzantine = &[4];
     sc.live = &[4];
     sc.cfg.priority = true;
@@ -162,7 +176,10 @@ fn nodedup() {
     sc.cfg.dedup = false;
     let r = explore(&sc);
     let (name, trace) = r.violation.expect("nodedup must violate an invariant");
-    assert_eq!(name, "ConflictFree", "wrong invariant: {name} (trace: {trace:?})");
+    assert_eq!(
+        name, "ConflictFree",
+        "wrong invariant: {name} (trace: {trace:?})"
+    );
 }
 
 #[test]
@@ -173,8 +190,15 @@ fn nofailover() {
     sc.byzantine = &[3];
     sc.cfg.failover = false;
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
-    assert!(r.incomplete_terminals > 0, "expected a stuck incomplete terminal");
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
+    assert!(
+        r.incomplete_terminals > 0,
+        "expected a stuck incomplete terminal"
+    );
 }
 
 #[test]
@@ -186,7 +210,11 @@ fn noexclude() {
     sc.byzantine = &[3];
     sc.cfg.exclude = false;
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
     assert!(r.has_cycle, "expected the re-grab livelock cycle");
 }
 
@@ -199,7 +227,11 @@ fn noreset() {
     sc.timeout_budget = 1;
     sc.cfg.reset_on_exhaust = false;
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
     assert!(r.incomplete_terminals > 0, "expected a stranded chunk");
 }
 
@@ -212,8 +244,15 @@ fn single_omission() {
     sc.cfg.single_source = true;
     sc.assign = &[(1, 3), (2, 2), (3, 1)];
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
-    assert!(r.incomplete_terminals > 0, "expected incompleteness under omission");
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
+    assert!(
+        r.incomplete_terminals > 0,
+        "expected incompleteness under omission"
+    );
 }
 
 #[test]
@@ -224,8 +263,15 @@ fn single_partial() {
     sc.cfg.single_source = true;
     sc.assign = &[(1, 2), (2, 2), (3, 1)];
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
-    assert!(r.incomplete_terminals > 0, "expected incompleteness under partial holdings");
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
+    assert!(
+        r.incomplete_terminals > 0,
+        "expected incompleteness under partial holdings"
+    );
 }
 
 #[test]
@@ -236,7 +282,11 @@ fn no_live() {
     sc.live = &[3];
     sc.cfg.enable_live = false;
     let r = explore(&sc);
-    assert!(r.violation.is_none(), "unexpected invariant violation: {:?}", r.violation);
+    assert!(
+        r.violation.is_none(),
+        "unexpected invariant violation: {:?}",
+        r.violation
+    );
     assert!(r.unfresh_terminals > 0, "expected an unfresh terminal");
 }
 
@@ -250,7 +300,10 @@ fn priority_does_not_block_on_unfetchable() {
     // everything fetchable. (Outside the TLC matrix: supply is deliberately
     // broken for chunk 3, so SupplyInv is not asserted.)
     use melissi_machine::PullState;
-    let mut m = PullState::new(Config { priority: true, ..ALL_ON });
+    let mut m = PullState::new(Config {
+        priority: true,
+        ..ALL_ON
+    });
     // chunk 3 is deepest but has NO holders; chunks 1, 2 are held by peer 1.
     m.set_prio(1, 1);
     m.set_prio(2, 2);
@@ -261,11 +314,17 @@ fn priority_does_not_block_on_unfetchable() {
     m.arrive_hist(2);
     m.arrive_hist(3);
     // deepest-first still orders the eligible chunks: 2 before 1 …
-    assert!(!m.claimable(1, 1), "chunk 2 (deeper, eligible) must go first");
+    assert!(
+        !m.claimable(1, 1),
+        "chunk 2 (deeper, eligible) must go first"
+    );
     assert!(m.want(2, 1));
     assert!(m.deliver(2, 1));
     // … and chunk 3 (unfetchable) never blocks chunk 1.
-    assert!(m.want(1, 1), "unfetchable deep chunk must not head-of-line block");
+    assert!(
+        m.want(1, 1),
+        "unfetchable deep chunk must not head-of-line block"
+    );
     assert!(m.deliver(1, 1));
     assert_eq!(m.deficit(), 1); // only the unfetchable chunk remains
     m.check_invariants().unwrap();

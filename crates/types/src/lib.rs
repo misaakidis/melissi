@@ -41,7 +41,11 @@ pub struct Triple {
 
 impl Triple {
     pub fn new(address: Address, batch_id: BatchId, stamp_hash: StampHash) -> Self {
-        Triple { address, batch_id, stamp_hash }
+        Triple {
+            address,
+            batch_id,
+            stamp_hash,
+        }
     }
 
     /// A deterministic distinct triple from a small seed — for tests and the
@@ -55,7 +59,11 @@ impl Triple {
             b[28..].copy_from_slice(&n.to_be_bytes());
             b
         };
-        Triple { address: tag(0xA), batch_id: tag(0xB), stamp_hash: tag(0xC) }
+        Triple {
+            address: tag(0xA),
+            batch_id: tag(0xB),
+            stamp_hash: tag(0xC),
+        }
     }
 }
 

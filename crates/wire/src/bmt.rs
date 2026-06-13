@@ -42,7 +42,10 @@ fn bmt_root(data: &[u8]) -> [u8; 32] {
 
 /// bee's content-addressed chunk address for a ≤ 4096-byte payload.
 pub fn chunk_address(payload: &[u8]) -> [u8; 32] {
-    assert!(payload.len() <= CHUNK_SIZE, "chunk payload exceeds 4096 bytes");
+    assert!(
+        payload.len() <= CHUNK_SIZE,
+        "chunk payload exceeds 4096 bytes"
+    );
     let mut padded = [0u8; CHUNK_SIZE];
     padded[..payload.len()].copy_from_slice(payload);
     let root = bmt_root(&padded);
@@ -66,7 +69,10 @@ mod tests {
     fn matches_bee_cac_vector() {
         let addr = chunk_address(b"greaterthanspan");
         let hex: String = addr.iter().map(|b| format!("{b:02x}")).collect();
-        assert_eq!(hex, "27913f1bdb6e8e52cbd5a5fd4ab577c857287edf6969b41efe926b51de0f4f23");
+        assert_eq!(
+            hex,
+            "27913f1bdb6e8e52cbd5a5fd4ab577c857287edf6969b41efe926b51de0f4f23"
+        );
     }
 
     /// The empty chunk address — bee's well-known zero-length CAC.
@@ -75,6 +81,9 @@ mod tests {
         let addr = chunk_address(b"");
         let hex: String = addr.iter().map(|b| format!("{b:02x}")).collect();
         // bee: keccak256(0x00..00 span ‖ bmt_root of 4096 zero bytes)
-        assert_eq!(hex, "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526");
+        assert_eq!(
+            hex,
+            "b34ca8c22b9e982354f9c7f50b470d66db428d880c8a904d5fe4ec9713171526"
+        );
     }
 }

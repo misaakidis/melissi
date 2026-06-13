@@ -42,20 +42,37 @@ impl Reserve {
             return;
         }
         let bin = bin_of(c);
-        let head = self.bins.get(&bin).and_then(|m| m.keys().last().copied()).unwrap_or(0);
+        let head = self
+            .bins
+            .get(&bin)
+            .and_then(|m| m.keys().last().copied())
+            .unwrap_or(0);
         self.bins.entry(bin).or_default().insert(head + 1, c);
     }
 }
 
 impl ServeReserve for Reserve {
     fn collect(&self, bin: Bin, start: BinId, limit: usize) -> (Vec<(BinId, Triple)>, BinId) {
-        let head = self.bins.get(&bin).and_then(|m| m.keys().last().copied()).unwrap_or(0);
+        let head = self
+            .bins
+            .get(&bin)
+            .and_then(|m| m.keys().last().copied())
+            .unwrap_or(0);
         let entries: Vec<(BinId, Triple)> = self
             .bins
             .get(&bin)
-            .map(|m| m.range(start..).map(|(&b, &c)| (b, c)).take(limit).collect())
+            .map(|m| {
+                m.range(start..)
+                    .map(|(&b, &c)| (b, c))
+                    .take(limit)
+                    .collect()
+            })
             .unwrap_or_default();
-        let topmost = entries.last().map(|&(b, _)| b).unwrap_or(head).max(start.saturating_sub(1));
+        let topmost = entries
+            .last()
+            .map(|&(b, _)| b)
+            .unwrap_or(head)
+            .max(start.saturating_sub(1));
         (entries, topmost.max(head.min(start.saturating_sub(1))))
     }
     fn has(&self, c: Triple) -> bool {
@@ -63,7 +80,12 @@ impl ServeReserve for Reserve {
     }
     fn cursors(&self) -> Vec<u64> {
         (0..RADIUS + NBINS)
-            .map(|b| self.bins.get(&b).and_then(|m| m.keys().last().copied()).unwrap_or(0))
+            .map(|b| {
+                self.bins
+                    .get(&b)
+                    .and_then(|m| m.keys().last().copied())
+                    .unwrap_or(0)
+            })
             .collect()
     }
     fn epoch(&self) -> u64 {
@@ -73,9 +95,21 @@ impl ServeReserve for Reserve {
 
 /// One pending wire interaction the harness must drive to completion.
 enum Job {
-    Cursors { from: usize, server: usize, client: CursorsClient },
-    Offer { from: usize, server: usize, client: OfferClient },
-    Fetch { from: usize, server: usize, client: FetchClient },
+    Cursors {
+        from: usize,
+        server: usize,
+        client: CursorsClient,
+    },
+    Offer {
+        from: usize,
+        server: usize,
+        client: OfferClient,
+    },
+    Fetch {
+        from: usize,
+        server: usize,
+        client: FetchClient,
+    },
 }
 
 struct WirePlay {
@@ -97,7 +131,9 @@ fn pid(i: usize) -> PeerId {
 impl WirePlay {
     fn new(k: usize, byzantine: &[usize]) -> Self {
         WirePlay {
-            nodes: (0..k).map(|_| Node::new(Config::PRODUCTION, RADIUS)).collect(),
+            nodes: (0..k)
+                .map(|_| Node::new(Config::PRODUCTION, RADIUS))
+                .collect(),
             reserves: (0..k).map(|_| Reserve::default()).collect(),
             byzantine: (0..k).map(|i| byzantine.contains(&i)).collect(),
             codec: MintedCodec::new([1u8; 32], 0),
@@ -173,7 +209,9 @@ impl WirePlay {
             while let Some((from, eff)) = self.effects.pop_front() {
                 self.launch(from, eff);
             }
-            let Some(job) = self.jobs.pop_front() else { break };
+            let Some(job) = self.jobs.pop_front() else {
+                break;
+            };
             guard += 1;
             assert!(guard < 1_000_000, "wireplay did not converge");
             self.drive(job);
@@ -185,7 +223,11 @@ impl WirePlay {
     /// reordering jobs would be a separate adversarial schedule.)
     fn drive(&mut self, job: Job) {
         match job {
-            Job::Cursors { from, server, mut client } => {
+            Job::Cursors {
+                from,
+                server,
+                mut client,
+            } => {
                 let mut to_server = match client.poll(&[]) {
                     ClientOut::Send(b) => b,
                     _ => unreachable!("cursors client sends Syn first"),
@@ -195,12 +237,23 @@ impl WirePlay {
                 to_server.clear();
                 match client.poll(&resp) {
                     ClientOut::Cursors { cursors, .. } => {
-                        self.feed(from, Event::CursorsResult { peer: pid(server), cursors });
+                        self.feed(
+                            from,
+                            Event::CursorsResult {
+                                peer: pid(server),
+                                cursors,
+                            },
+                        );
                     }
                     _ => panic!("cursors did not complete"),
                 }
             }
-            Job::Offer { from, server, mut client, .. } => {
+            Job::Offer {
+                from,
+                server,
+                mut client,
+                ..
+            } => {
                 let mut stream = ServerStream::new();
                 // Get -> Offer
                 let get = match client.poll(&self.codec, &[]) {
@@ -213,7 +266,13 @@ impl WirePlay {
                             let (bin, start) = (client.bin, client.start);
                             self.feed(
                                 from,
-                                Event::OfferResult { peer: pid(server), bin, start, refs, topmost },
+                                Event::OfferResult {
+                                    peer: pid(server),
+                                    bin,
+                                    start,
+                                    refs,
+                                    topmost,
+                                },
                             );
                         }
                         ClientOut::Need => panic!("offer truncated"),
@@ -223,10 +282,21 @@ impl WirePlay {
                     _ => unreachable!(),
                 }
             }
-            Job::Fetch { from, server, mut client } => {
+            Job::Fetch {
+                from,
+                server,
+                mut client,
+            } => {
                 let outcomes = self.drive_fetch(server, &mut client);
                 let (bin, _) = (client.bin, client.start);
-                self.feed(from, Event::FetchResult { peer: pid(server), bin, outcomes });
+                self.feed(
+                    from,
+                    Event::FetchResult {
+                        peer: pid(server),
+                        bin,
+                        outcomes,
+                    },
+                );
             }
         }
     }
@@ -316,10 +386,17 @@ fn wire_cold_start_converges_at_the_floor() {
         w.start();
         w.run();
         for &c in &universe {
-            assert!(w.nodes[0].has(c), "k={k}: chunk {c:?} missing over the wire");
+            assert!(
+                w.nodes[0].has(c),
+                "k={k}: chunk {c:?} missing over the wire"
+            );
         }
         assert_eq!(w.nodes[0].deficit(), 0, "k={k}");
-        assert_eq!(w.nodes[0].deliveries(), m, "k={k}: exactly-once over the wire");
+        assert_eq!(
+            w.nodes[0].deliveries(),
+            m,
+            "k={k}: exactly-once over the wire"
+        );
         assert!(!w.nodes[0].conflict());
         w.nodes[0].check_invariants().unwrap();
     }

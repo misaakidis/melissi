@@ -343,7 +343,10 @@ impl<C: Copy + Ord + Hash> PullState<C> {
 
     /// `Phi`: the deficit over what is currently available.
     pub fn deficit(&self) -> usize {
-        self.arrived.iter().filter(|c| !self.got.contains(c)).count()
+        self.arrived
+            .iter()
+            .filter(|c| !self.got.contains(c))
+            .count()
     }
 
     pub fn conflict(&self) -> bool {

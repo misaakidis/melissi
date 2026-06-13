@@ -21,10 +21,10 @@ use melissi_settlement::BinId;
 use melissi_types::{Bin, Triple};
 use std::collections::BTreeMap;
 
-/// The boundary where real content lands later (BMT hashing, postage stamp
-/// validation — M3-b). For wire self-play the codec is synthetic and the
-/// validation hook decides peer-fault vs entry-fault, exactly the §4.3
-/// three-way split.
+/// Identity ↔ wire, and delivery validation. Implemented by
+/// [`crate::codec::MintedCodec`] over real content-addressing and postage:
+/// `validate` returns the §4.3 three-way split — `Delivered`, `Rejected`
+/// (entry-fault), or `Missed` (peer-fault) — from the delivered bytes alone.
 pub trait TripleCodec {
     fn address(&self, c: Triple) -> Vec<u8>;
     fn batch_id(&self, c: Triple) -> Vec<u8>;
@@ -53,9 +53,15 @@ pub enum ClientOut {
     /// Waiting on more stream bytes.
     Need,
     /// Cursors stream done.
-    Cursors { cursors: Vec<(Bin, BinId)>, epoch: u64 },
+    Cursors {
+        cursors: Vec<(Bin, BinId)>,
+        epoch: u64,
+    },
     /// Advertisement done: synthetic-positioned refs + topmost.
-    OfferDone { refs: Vec<(BinId, Triple)>, topmost: BinId },
+    OfferDone {
+        refs: Vec<(BinId, Triple)>,
+        topmost: BinId,
+    },
     /// Delivery cycle done: per-triple outcomes, never collapsed.
     FetchDone { outcomes: Vec<(Triple, Outcome)> },
 }
@@ -68,7 +74,10 @@ pub struct CursorsClient {
 
 impl CursorsClient {
     pub fn new() -> Self {
-        CursorsClient { buf: Vec::new(), sent: false }
+        CursorsClient {
+            buf: Vec::new(),
+            sent: false,
+        }
     }
     pub fn poll(&mut self, input: &[u8]) -> ClientOut {
         if !self.sent {
@@ -79,9 +88,16 @@ impl CursorsClient {
         if let Some((msg, n)) = pb::deframe(&self.buf) {
             self.buf.drain(..n);
             let ack = pb::Ack::decode(&msg).expect("malformed Ack");
-            let cursors =
-                ack.cursors.iter().enumerate().map(|(b, &h)| (b as Bin, h)).collect();
-            return ClientOut::Cursors { cursors, epoch: ack.epoch };
+            let cursors = ack
+                .cursors
+                .iter()
+                .enumerate()
+                .map(|(b, &h)| (b as Bin, h))
+                .collect();
+            return ClientOut::Cursors {
+                cursors,
+                epoch: ack.epoch,
+            };
         }
         ClientOut::Need
     }
@@ -98,12 +114,20 @@ pub struct OfferClient {
 
 impl OfferClient {
     pub fn new(bin: Bin, start: BinId) -> Self {
-        OfferClient { bin, start, buf: Vec::new(), sent: false }
+        OfferClient {
+            bin,
+            start,
+            buf: Vec::new(),
+            sent: false,
+        }
     }
     pub fn poll<C: TripleCodec>(&mut self, codec: &C, input: &[u8]) -> ClientOut {
         if !self.sent {
             self.sent = true;
-            let get = pb::Get { bin: u32::from(self.bin), start: self.start };
+            let get = pb::Get {
+                bin: u32::from(self.bin),
+                start: self.start,
+            };
             return ClientOut::Send(pb::frame(&get.encode()));
         }
         self.buf.extend_from_slice(input);
@@ -121,7 +145,10 @@ impl OfferClient {
                         .map(|t| (self.start + i as BinId, t))
                 })
                 .collect();
-            return ClientOut::OfferDone { refs, topmost: offer.topmost };
+            return ClientOut::OfferDone {
+                refs,
+                topmost: offer.topmost,
+            };
         }
         ClientOut::Need
     }
@@ -138,7 +165,10 @@ impl OfferClient {
 enum FetchState {
     SendGet,
     AwaitOffer,
-    AwaitDeliveries { pending: BTreeMap<Triple, ()>, remaining: usize },
+    AwaitDeliveries {
+        pending: BTreeMap<Triple, ()>,
+        remaining: usize,
+    },
 }
 
 /// `Effect::Fetch` over the legacy coupling: a FRESH `Get → Offer`, wants
@@ -172,7 +202,10 @@ impl FetchClient {
             match &mut self.state {
                 FetchState::SendGet => {
                     self.state = FetchState::AwaitOffer;
-                    let get = pb::Get { bin: u32::from(self.bin), start: self.start };
+                    let get = pb::Get {
+                        bin: u32::from(self.bin),
+                        start: self.start,
+                    };
                     return ClientOut::Send(pb::frame(&get.encode()));
                 }
                 FetchState::AwaitOffer => {
@@ -185,8 +218,7 @@ impl FetchClient {
                     let mut bv = pb::bitvector_new(offer.chunks.len().max(1));
                     let mut pending = BTreeMap::new();
                     for (i, ch) in offer.chunks.iter().enumerate() {
-                        if let Some(t) =
-                            codec.triple_of(&ch.address, &ch.batch_id, &ch.stamp_hash)
+                        if let Some(t) = codec.triple_of(&ch.address, &ch.batch_id, &ch.stamp_hash)
                         {
                             if self.want.contains(&t) && !pending.contains_key(&t) {
                                 pb::bitvector_set(&mut bv, i);
@@ -260,7 +292,9 @@ impl FetchClient {
             pending.clear();
             *remaining = 0;
         }
-        ClientOut::FetchDone { outcomes: std::mem::take(&mut self.outcomes) }
+        ClientOut::FetchDone {
+            outcomes: std::mem::take(&mut self.outcomes),
+        }
     }
 }
 
@@ -286,7 +320,10 @@ pub enum ServerOut {
     /// Stream complete (after deliveries, an empty offer, or an all-zero want).
     Done,
     /// The range is empty: the honest server BLOCKS (the live subscription).
-    Blocked { bin: Bin, start: BinId },
+    Blocked {
+        bin: Bin,
+        start: BinId,
+    },
 }
 
 enum ServeState {
@@ -308,7 +345,10 @@ impl Default for ServerStream {
 
 impl ServerStream {
     pub fn new() -> Self {
-        ServerStream { buf: Vec::new(), state: ServeState::AwaitGet }
+        ServerStream {
+            buf: Vec::new(),
+            state: ServeState::AwaitGet,
+        }
     }
 
     pub fn poll<C: TripleCodec, R: ServeReserve>(
@@ -329,7 +369,10 @@ impl ServerStream {
                 let (entries, topmost) = reserve.collect(bin, get.start, MAX_PAGE);
                 if entries.is_empty() && topmost < get.start {
                     // nothing at or past start: block until something lands
-                    return ServerOut::Blocked { bin, start: get.start };
+                    return ServerOut::Blocked {
+                        bin,
+                        start: get.start,
+                    };
                 }
                 let chunks = entries
                     .iter()
@@ -369,7 +412,11 @@ impl ServerStream {
                     } else {
                         // churned out since the offer: the zero-address
                         // placeholder (bee processWant)
-                        pb::Delivery { address: vec![0; 32], data: vec![], stamp: vec![] }
+                        pb::Delivery {
+                            address: vec![0; 32],
+                            data: vec![],
+                            stamp: vec![],
+                        }
                     };
                     frames.extend_from_slice(&pb::frame(&d.encode()));
                 }
@@ -389,7 +436,10 @@ impl CursorsServer {
     pub fn respond<R: ServeReserve>(reserve: &R, input: &[u8]) -> Option<Vec<u8>> {
         let (msg, _) = pb::deframe(input)?;
         pb::Syn::decode(&msg)?;
-        let ack = pb::Ack { cursors: reserve.cursors(), epoch: reserve.epoch() };
+        let ack = pb::Ack {
+            cursors: reserve.cursors(),
+            epoch: reserve.epoch(),
+        };
         Some(pb::frame(&ack.encode()))
     }
 }

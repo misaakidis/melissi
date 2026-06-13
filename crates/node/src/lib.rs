@@ -25,8 +25,8 @@ mod discovery;
 use discovery::Discovery;
 
 use melissi_machine::{Config, PeerId, PullState};
-use melissi_types::Triple;
 use melissi_settlement::{BinId, PeerBinLog};
+use melissi_types::Triple;
 use std::collections::{BTreeMap, BTreeSet};
 
 // `Bin` from the single-sourced identity seam; re-exported so downstream
@@ -53,7 +53,10 @@ pub enum Event {
     /// It departed: claims release, holdings vanish — no bars.
     PeerGone(PeerId),
     /// `GetCursors` returned: per-bin head BinIDs — the HIST/LIVE boundary.
-    CursorsResult { peer: PeerId, cursors: Vec<(Bin, BinId)> },
+    CursorsResult {
+        peer: PeerId,
+        cursors: Vec<(Bin, BinId)>,
+    },
     /// An offer (advertisement) for `[start, topmost]`.
     OfferResult {
         peer: PeerId,
@@ -63,7 +66,11 @@ pub enum Event {
         topmost: BinId,
     },
     /// Per-triple outcomes of a `Fetch` (delivery step).
-    FetchResult { peer: PeerId, bin: Bin, outcomes: Vec<(Triple, Outcome)> },
+    FetchResult {
+        peer: PeerId,
+        bin: Bin,
+        outcomes: Vec<(Triple, Outcome)>,
+    },
     /// The shell's refresh signal: re-offer every covered-but-unsettled range
     /// (churn detection — the offer-diff). Rounds only ever extend coverage;
     /// re-advertising the same range is paced by the shell, which owns time —
@@ -76,11 +83,23 @@ pub enum Effect {
     GetCursors(PeerId),
     /// Keep one offer open per `(peer, bin)` — the live subscription: the
     /// serving side blocks on an empty range until something arrives.
-    Offer { peer: PeerId, bin: Bin, start: BinId },
+    Offer {
+        peer: PeerId,
+        bin: Bin,
+        start: BinId,
+    },
     /// Fetch exactly these triples from this peer (want-by-reference).
-    Fetch { peer: PeerId, bin: Bin, want: Vec<Triple> },
+    Fetch {
+        peer: PeerId,
+        bin: Bin,
+        want: Vec<Triple>,
+    },
     /// The `(peer, bin)` high-water advanced: the ONLY durable transition.
-    Settled { peer: PeerId, bin: Bin, upto: BinId },
+    Settled {
+        peer: PeerId,
+        bin: Bin,
+        upto: BinId,
+    },
 }
 
 /// The floor-achieving policy knobs (design §5.3, §5.6). Provably correctness-
@@ -101,7 +120,10 @@ pub struct Policy {
 }
 
 impl Policy {
-    pub const SHIPPED: Policy = Policy { cumulative_routing: true, discovery_barrier: true };
+    pub const SHIPPED: Policy = Policy {
+        cumulative_routing: true,
+        discovery_barrier: true,
+    };
 }
 
 impl Default for Policy {
@@ -202,13 +224,23 @@ impl Node {
                         self.disc.resolve(peer, bin);
                     }
                     if self.disc.try_open(peer, bin) {
-                        fx.push(Effect::Offer { peer, bin, start: log.next() });
+                        fx.push(Effect::Offer {
+                            peer,
+                            bin,
+                            start: log.next(),
+                        });
                     }
                 }
                 fx
             }
 
-            Event::OfferResult { peer, bin, start, refs, topmost } => {
+            Event::OfferResult {
+                peer,
+                bin,
+                start,
+                refs,
+                topmost,
+            } => {
                 self.disc.close(peer, bin);
                 self.disc.resolve(peer, bin);
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
@@ -263,7 +295,11 @@ impl Node {
                 fx
             }
 
-            Event::FetchResult { peer, bin, outcomes } => {
+            Event::FetchResult {
+                peer,
+                bin,
+                outcomes,
+            } => {
                 for (c, outcome) in outcomes {
                     match outcome {
                         Outcome::Delivered => {
@@ -300,18 +336,23 @@ impl Node {
                 (upto, log.next())
             };
             if let Some(upto) = settled_upto {
-                fx.push(Effect::Settled { peer: key.0, bin: key.1, upto });
+                fx.push(Effect::Settled {
+                    peer: key.0,
+                    bin: key.1,
+                    upto,
+                });
             }
             // Keep one offer open per (peer, bin) — but rounds only EXTEND
             // coverage (the uncovered tail: the live subscription). Re-offering
             // covered-but-unsettled ground is the shell's Tick: retries within
             // a covered range go through known holders, not fresh adverts.
             let covered = self.logs[&key].topmost();
-            if next > covered
-                && self.peers.contains(&key.0)
-                && self.disc.try_open(key.0, key.1)
-            {
-                fx.push(Effect::Offer { peer: key.0, bin: key.1, start: next });
+            if next > covered && self.peers.contains(&key.0) && self.disc.try_open(key.0, key.1) {
+                fx.push(Effect::Offer {
+                    peer: key.0,
+                    bin: key.1,
+                    start: next,
+                });
             }
         }
 
@@ -373,7 +414,10 @@ impl Node {
             let ok = self.m.want(c, p);
             debug_assert!(ok, "policy chose a disabled want");
             *self.assigned.entry(p).or_default() += 1;
-            batches.entry((p, self.bin_of.get(&c).copied().unwrap_or(0))).or_default().push(c);
+            batches
+                .entry((p, self.bin_of.get(&c).copied().unwrap_or(0)))
+                .or_default()
+                .push(c);
         }
         for ((peer, bin), want) in batches {
             fx.push(Effect::Fetch { peer, bin, want });

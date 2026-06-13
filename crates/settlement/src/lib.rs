@@ -48,7 +48,11 @@ impl PeerBinLog {
 
     /// Resume from a persisted high-water (bee: `intervalstore` `Next() - 1`).
     pub fn resume(interval: BinId) -> Self {
-        PeerBinLog { interval, topmost: interval, entries: BTreeMap::new() }
+        PeerBinLog {
+            interval,
+            topmost: interval,
+            entries: BTreeMap::new(),
+        }
     }
 
     /// Where the next `Offer` starts (bee: `Next()`).
@@ -212,7 +216,10 @@ mod tests {
         b.advance(&settled);
         assert_eq!(a.interval(), 2, "A must wedge just below the bad entry");
         assert_eq!(b.interval(), 3, "B holds no bad entry and drains");
-        assert!(a.unsettled().any(|(_, x)| x == t(3)), "the bad entry stays visible");
+        assert!(
+            a.unsettled().any(|(_, x)| x == t(3)),
+            "the bad entry stays visible"
+        );
     }
 
     /// The cross-peer essence of §4.6: an entry offered by A but fetched via B

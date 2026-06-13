@@ -53,7 +53,10 @@ struct SimNode {
 
 impl SimNode {
     fn head(&self, bin: Bin) -> BinId {
-        self.reserve.get(&bin).and_then(|m| m.keys().last().copied()).unwrap_or(0)
+        self.reserve
+            .get(&bin)
+            .and_then(|m| m.keys().last().copied())
+            .unwrap_or(0)
     }
 }
 
@@ -154,7 +157,11 @@ impl Sim {
         }
         let bin = bin_of(c);
         let head = self.nodes[i].head(bin);
-        self.nodes[i].reserve.entry(bin).or_default().insert(head + 1, c);
+        self.nodes[i]
+            .reserve
+            .entry(bin)
+            .or_default()
+            .insert(head + 1, c);
         // the bin grew: answer the parked offers (the live subscription)
         let ready: Vec<(usize, Bin, BinId)> = self.nodes[i]
             .parked
@@ -162,10 +169,15 @@ impl Sim {
             .copied()
             .filter(|&(_, b, start)| b == bin && self.nodes[i].head(bin) >= start)
             .collect();
-        self.nodes[i].parked.retain(|&(_, b, start)| !(b == bin && head + 1 >= start));
+        self.nodes[i]
+            .parked
+            .retain(|&(_, b, start)| !(b == bin && head + 1 >= start));
         for (requester, b, start) in ready {
             let resp = self.offer_response(i, b, start);
-            self.queue.push(Msg::Resp { to: requester, ev: resp });
+            self.queue.push(Msg::Resp {
+                to: requester,
+                ev: resp,
+            });
         }
     }
 
@@ -178,7 +190,13 @@ impl Sim {
             .get(&bin)
             .map(|m| m.range(start..).map(|(&b, &c)| (b, c)).collect())
             .unwrap_or_default();
-        Event::OfferResult { peer: peer_id(j), bin, start, refs, topmost: head.max(start) }
+        Event::OfferResult {
+            peer: peer_id(j),
+            bin,
+            start,
+            refs,
+            topmost: head.max(start),
+        }
     }
 
     /// Deliver one randomly-chosen in-flight message. False when quiescent.
@@ -197,8 +215,9 @@ impl Sim {
                     // cursors span ALL bins of the universe — an empty bin has
                     // head 0, and the standing offer on it is the channel a
                     // later arrival propagates through
-                    let cursors: Vec<(Bin, BinId)> =
-                        (RADIUS..RADIUS + NBINS).map(|b| (b, self.nodes[j].head(b))).collect();
+                    let cursors: Vec<(Bin, BinId)> = (RADIUS..RADIUS + NBINS)
+                        .map(|b| (b, self.nodes[j].head(b)))
+                        .collect();
                     self.queue.push(Msg::Resp {
                         to: from,
                         ev: Event::CursorsResult { peer: p, cursors },
@@ -232,7 +251,11 @@ impl Sim {
                     }
                     self.queue.push(Msg::Resp {
                         to: from,
-                        ev: Event::FetchResult { peer, bin, outcomes },
+                        ev: Event::FetchResult {
+                            peer,
+                            bin,
+                            outcomes,
+                        },
                     });
                 }
                 Effect::Settled { .. } => {} // persistence: a no-op in the sim
@@ -282,7 +305,9 @@ impl Sim {
     pub fn assert_invariants(&self) {
         for (i, n) in self.nodes.iter().enumerate() {
             assert!(!n.puller.conflict(), "node {i}: ConflictFree tripped");
-            n.puller.check_invariants().unwrap_or_else(|e| panic!("node {i}: {e}"));
+            n.puller
+                .check_invariants()
+                .unwrap_or_else(|e| panic!("node {i}: {e}"));
         }
     }
 

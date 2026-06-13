@@ -82,26 +82,42 @@ impl Neighbourhood {
 mod tests {
     use super::*;
 
-    /// bee `pkg/swarm` TestProximity: a single set bit at position `n` gives
-    /// proximity `n`; identical addresses give MaxPO.
+    /// bee `pkg/swarm` TestProximity, exhaustively across ALL 256 bit
+    /// positions: a single set bit at position `n` gives proximity
+    /// `min(n, MaxPO)`. This pins the boundary explicitly — bit 30 → 30,
+    /// bit 31 → 31, **bit 32 → 31, bit 33 → 31** — i.e. anything at or past
+    /// MaxPO saturates, including the byte-4 boundary bee's 4-byte scan stops
+    /// at. Identical addresses give MaxPO.
     #[test]
-    fn proximity_matches_bee_single_bit_vectors() {
+    fn proximity_matches_bee_across_all_bit_positions() {
         let base = [0u8; 32];
         assert_eq!(proximity(&base, &base), MAX_PO, "self → MaxPO");
-        for bit in 0..32u8 {
+        for bit in 0u16..256 {
             let mut other = [0u8; 32];
             other[(bit / 8) as usize] = 0b1000_0000 >> (bit % 8);
-            assert_eq!(proximity(&base, &other), bit.min(MAX_PO), "bit {bit}");
+            let expected = (bit.min(MAX_PO as u16)) as u8;
+            assert_eq!(proximity(&base, &other), expected, "bit {bit}");
         }
     }
 
+    /// The exact MaxPO boundary, called out so the cap can't silently drift.
     #[test]
-    fn proximity_saturates_at_max_po() {
-        // addresses agreeing well past bit 31 still cap at MaxPO
-        let a = [0u8; 32];
-        let mut b = [0u8; 32];
-        b[20] = 0xff; // first difference far beyond bit 31
-        assert_eq!(proximity(&a, &b), MAX_PO);
+    fn proximity_saturates_at_and_past_max_po() {
+        let set_bit = |n: usize| {
+            let mut a = [0u8; 32];
+            a[n / 8] = 0b1000_0000 >> (n % 8);
+            a
+        };
+        let base = [0u8; 32];
+        assert_eq!(proximity(&base, &set_bit(30)), 30);
+        assert_eq!(proximity(&base, &set_bit(31)), 31);
+        assert_eq!(
+            proximity(&base, &set_bit(32)),
+            31,
+            "bit 32 must saturate to MaxPO"
+        );
+        assert_eq!(proximity(&base, &set_bit(33)), 31);
+        assert_eq!(proximity(&base, &set_bit(200)), 31); // far difference still caps
     }
 
     /// bee `pkg/crypto` TestNewOverlayFromEthereumAddress: the canonical

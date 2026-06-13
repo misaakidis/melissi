@@ -72,7 +72,11 @@ fn epidemic_reaches_theta_rep_at_the_delivery_floor() {
 
         sim.assert_converged(&universe());
         let total: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
-        assert_eq!(total, (k as u64 - 1) * M as u64, "seed={seed}: network delivery floor");
+        assert_eq!(
+            total,
+            (k as u64 - 1) * M as u64,
+            "seed={seed}: network delivery floor"
+        );
         let served: u64 = sim.served.iter().sum();
         assert_eq!(served, (k as u64 - 1) * M as u64);
     }
@@ -122,11 +126,18 @@ fn live_arrivals_spread_to_all_nodes() {
     sim.run();
 
     for i in 0..k {
-        assert!(sim.node_has(i, t(100)) && sim.node_has(i, t(101)), "node {i} missing a LIVE chunk");
+        assert!(
+            sim.node_has(i, t(100)) && sim.node_has(i, t(101)),
+            "node {i} missing a LIVE chunk"
+        );
         assert_eq!(sim.deficit(i), 0);
     }
     let after: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
-    assert_eq!(after - before, 2 * (k as u64 - 1), "LIVE spread at the floor");
+    assert_eq!(
+        after - before,
+        2 * (k as u64 - 1),
+        "LIVE spread at the floor"
+    );
     sim.assert_invariants();
 }
 
@@ -148,7 +159,11 @@ fn small_gap_resync_fetches_only_the_gap() {
         sim.run();
 
         sim.assert_converged(&universe());
-        assert_eq!(sim.deliveries(0), gap.len() as u64, "seed={seed}: fetch the gap, only");
+        assert_eq!(
+            sim.deliveries(0),
+            gap.len() as u64,
+            "seed={seed}: fetch the gap, only"
+        );
     }
 }
 
@@ -169,7 +184,10 @@ fn small_gap_resync_fetches_only_the_gap() {
 /// catches is fixed, not flaky.
 #[test]
 fn outstanding_only_routing_breaks_the_fairness_floor() {
-    let off = Policy { cumulative_routing: false, discovery_barrier: true };
+    let off = Policy {
+        cumulative_routing: false,
+        discovery_barrier: true,
+    };
     let mut skewed = 0;
     for seed in 0..40u64 {
         let mut sim = Sim::with_policy(4, &[], seed, off);
@@ -190,7 +208,10 @@ fn outstanding_only_routing_breaks_the_fairness_floor() {
             skewed += 1;
         }
     }
-    assert!(skewed > 0, "outstanding-only routing must skew serve load on some ordering");
+    assert!(
+        skewed > 0,
+        "outstanding-only routing must skew serve load on some ordering"
+    );
 }
 
 /// Ablate the discovery barrier (schedule before the choice set assembles).
@@ -198,7 +219,10 @@ fn outstanding_only_routing_breaks_the_fairness_floor() {
 /// whole choice set and is handed a disproportionate share — the floor breaks.
 #[test]
 fn no_discovery_barrier_breaks_the_fairness_floor() {
-    let off = Policy { cumulative_routing: true, discovery_barrier: false };
+    let off = Policy {
+        cumulative_routing: true,
+        discovery_barrier: false,
+    };
     let mut found_skew = false;
     for seed in 0..5u64 {
         let mut sim = Sim::with_policy(4, &[], seed, off);
@@ -217,5 +241,8 @@ fn no_discovery_barrier_breaks_the_fairness_floor() {
             found_skew = true;
         }
     }
-    assert!(found_skew, "no discovery barrier must skew serve load on some seed");
+    assert!(
+        found_skew,
+        "no discovery barrier must skew serve load on some seed"
+    );
 }

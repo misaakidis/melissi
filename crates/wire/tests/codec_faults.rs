@@ -9,7 +9,11 @@ use melissi_wire::codec::MintedCodec;
 use melissi_wire::pb::Delivery;
 
 fn delivery(codec: &MintedCodec, c: melissi_types::Triple) -> Delivery {
-    Delivery { address: codec.address(c), data: codec.data(c), stamp: codec.stamp(c) }
+    Delivery {
+        address: codec.address(c),
+        data: codec.data(c),
+        stamp: codec.stamp(c),
+    }
 }
 
 /// A peer-fault is LOCAL, an entry-fault is GLOBAL. Garbage bytes from one

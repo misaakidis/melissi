@@ -68,8 +68,7 @@ impl Discovery {
         lists_bin: impl Fn(PeerId) -> bool,
     ) -> bool {
         peers.into_iter().all(|p| {
-            self.cursored.contains(&p)
-                && (!lists_bin(p) || self.hist_resolved.contains(&(p, bin)))
+            self.cursored.contains(&p) && (!lists_bin(p) || self.hist_resolved.contains(&(p, bin)))
         })
     }
 }

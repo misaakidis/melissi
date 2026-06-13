@@ -33,7 +33,10 @@ struct SimPeer {
 
 impl SimPeer {
     fn head(&self, bin: Bin) -> BinId {
-        self.bins.get(&bin).and_then(|m| m.keys().last().copied()).unwrap_or(0)
+        self.bins
+            .get(&bin)
+            .and_then(|m| m.keys().last().copied())
+            .unwrap_or(0)
     }
     fn holds(&self, c: Triple) -> bool {
         self.bins.values().any(|m| m.values().any(|&x| x == c))
@@ -120,7 +123,11 @@ impl Harness {
                     };
                     outcomes.push((c, outcome));
                 }
-                self.feed(Event::FetchResult { peer, bin, outcomes });
+                self.feed(Event::FetchResult {
+                    peer,
+                    bin,
+                    outcomes,
+                });
             }
             Effect::Settled { peer, bin, upto } => {
                 self.settled_log.push((peer, bin, upto));
@@ -148,7 +155,13 @@ impl Harness {
         if refs.is_empty() && head < start {
             return false; // nothing at or past start: hold (live subscription)
         }
-        self.feed(Event::OfferResult { peer: p, bin, start, refs, topmost: head.max(start) });
+        self.feed(Event::OfferResult {
+            peer: p,
+            bin,
+            start,
+            refs,
+            topmost: head.max(start),
+        });
         true
     }
 
@@ -187,7 +200,10 @@ impl Harness {
         let mut last: BTreeMap<(PeerId, Bin), BinId> = BTreeMap::new();
         for &(p, b, upto) in &self.settled_log {
             let prev = last.insert((p, b), upto).unwrap_or(0);
-            assert!(upto > prev, "Settled regressed for ({p},{b}): {prev} -> {upto}");
+            assert!(
+                upto > prev,
+                "Settled regressed for ({p},{b}): {prev} -> {upto}"
+            );
         }
     }
 }
@@ -207,7 +223,11 @@ fn full_replication_fetches_each_chunk_once() {
     assert_eq!(h.node.deficit(), 0);
     assert_eq!(h.node.deliveries(), 3, "3 chunks, 3 deliveries — not k x 3");
     for p in 1..=3 {
-        assert_eq!(h.node.interval(p, 1), Some(3), "peer {p}'s interval must drain");
+        assert_eq!(
+            h.node.interval(p, 1),
+            Some(3),
+            "peer {p}'s interval must drain"
+        );
     }
     h.assert_invariants();
 }
@@ -239,10 +259,18 @@ fn rejected_entry_settles_and_never_pins_the_interval() {
     h.add_peer(2, false, &[(1, &[10, 20, 30])]);
     h.run_to_quiescence();
 
-    assert_eq!(h.node.deficit(), 0, "the rejected entry is settled, not owed");
+    assert_eq!(
+        h.node.deficit(),
+        0,
+        "the rejected entry is settled, not owed"
+    );
     assert!(h.node.has(t(10)) && h.node.has(t(30)) && !h.node.has(t(20)));
     assert_eq!(h.node.deliveries(), 2);
-    assert_eq!(h.node.interval(1, 1), Some(3), "the bad entry must not pin the interval");
+    assert_eq!(
+        h.node.interval(1, 1),
+        Some(3),
+        "the bad entry must not pin the interval"
+    );
     h.assert_invariants();
 }
 
@@ -301,8 +329,12 @@ fn churned_out_entry_is_forgotten_without_a_bar() {
     let mut h = Harness::new(Config::PRODUCTION, 1);
     h.add_peer(1, false, &[(1, &[20])]); //        BinIDs: 1 -> 20
     h.add_peer(2, false, &[(1, &[20, 30])]); //    BinIDs: 1 -> 20, 2 -> 30
-    // drive discovery until both fetches are scheduled
-    while h.pending.front().is_some_and(|fx| !matches!(fx, Effect::Fetch { .. })) {
+                                             // drive discovery until both fetches are scheduled
+    while h
+        .pending
+        .front()
+        .is_some_and(|fx| !matches!(fx, Effect::Fetch { .. }))
+    {
         h.step();
     }
     // hold back peer 1's fetch (it carries chunk 20's claim), let peer 2's run
@@ -310,14 +342,18 @@ fn churned_out_entry_is_forgotten_without_a_bar() {
     assert!(matches!(held_fetch, Effect::Fetch { peer: 1, .. }));
     h.lose(2, t(20)); // churn: peer 2 evicts 20 while it is claimed at peer 1
     h.run_to_quiescence(); // peer 2's fetch (chunk 30) completes
-    // the shell's refresh: re-offer the covered-but-unsettled range; peer 2's
-    // fresh offer no longer names 20 — the diff fires
+                           // the shell's refresh: re-offer the covered-but-unsettled range; peer 2's
+                           // fresh offer no longer names 20 — the diff fires
     h.feed(Event::Tick);
     h.run_to_quiescence();
     // the diff fired: 20 left peer 2's window as a gap, and the interval
     // drained to topmost although 20 is still unsettled — it stays visible
     // through peer 1's window, where its claim is in flight.
-    assert_eq!(h.node.interval(2, 1), Some(2), "gap must not pin peer 2's interval");
+    assert_eq!(
+        h.node.interval(2, 1),
+        Some(2),
+        "gap must not pin peer 2's interval"
+    );
     assert_eq!(h.node.deficit(), 1, "chunk 20 still owed (claim in flight)");
     // now peer 1 delivers it
     h.pending.push_back(held_fetch);
@@ -346,7 +382,12 @@ fn peer_gone_releases_claims_and_reroutes() {
     // whatever was claimed from peer 1 is now in flight to a dead peer
     h.feed(Event::PeerGone(1));
     // drop the stale fetch effects addressed to peer 1 (the shell's cancel)
-    h.pending.retain(|fx| !matches!(fx, Effect::Fetch { peer: 1, .. } | Effect::Offer { peer: 1, .. }));
+    h.pending.retain(|fx| {
+        !matches!(
+            fx,
+            Effect::Fetch { peer: 1, .. } | Effect::Offer { peer: 1, .. }
+        )
+    });
     h.run_to_quiescence();
 
     assert_eq!(h.node.deficit(), 0);

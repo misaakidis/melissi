@@ -46,8 +46,14 @@ impl<'a> Stamp<'a> {
 }
 
 /// keccak256(addr ‖ batchID ‖ index ‖ timestamp) — bee `ToSignDigest`.
-pub fn to_sign_digest(chunk_addr: &[u8], batch_id: &[u8], index: &[u8], timestamp: &[u8]) -> [u8; 32] {
-    let mut buf = Vec::with_capacity(chunk_addr.len() + batch_id.len() + index.len() + timestamp.len());
+pub fn to_sign_digest(
+    chunk_addr: &[u8],
+    batch_id: &[u8],
+    index: &[u8],
+    timestamp: &[u8],
+) -> [u8; 32] {
+    let mut buf =
+        Vec::with_capacity(chunk_addr.len() + batch_id.len() + index.len() + timestamp.len());
     buf.extend_from_slice(chunk_addr);
     buf.extend_from_slice(batch_id);
     buf.extend_from_slice(index);
@@ -75,7 +81,12 @@ pub fn eth_address(pubkey_uncompressed: &[u8]) -> [u8; 20] {
 /// Recover the batch-owner ethereum address that signed this stamp for
 /// `chunk_addr`, or `None` if the signature is malformed.
 pub fn recover_owner(chunk_addr: &[u8], stamp: &Stamp) -> Option<[u8; 20]> {
-    let digest = to_sign_digest(chunk_addr, stamp.batch_id(), stamp.index(), stamp.timestamp());
+    let digest = to_sign_digest(
+        chunk_addr,
+        stamp.batch_id(),
+        stamp.index(),
+        stamp.timestamp(),
+    );
     let signed = eth_prefixed(&digest);
     let sig_bytes = stamp.sig();
     let recid = RecoveryId::from_byte(sig_bytes[64])?;
@@ -98,7 +109,13 @@ mod tests {
 
     /// Sign a stamp the bee way: recoverable secp256k1 over the eth-prefixed
     /// digest, v appended last.
-    fn sign_stamp(key: &SigningKey, chunk_addr: &[u8], batch_id: &[u8; 32], index: &[u8; 8], ts: &[u8; 8]) -> Vec<u8> {
+    fn sign_stamp(
+        key: &SigningKey,
+        chunk_addr: &[u8],
+        batch_id: &[u8; 32],
+        index: &[u8; 8],
+        ts: &[u8; 8],
+    ) -> Vec<u8> {
         let digest = to_sign_digest(chunk_addr, batch_id, index, ts);
         let signed = eth_prefixed(&digest);
         let (sig, recid): (Signature, RecoveryId) = key.sign_prehash(&signed).unwrap();
@@ -140,7 +157,10 @@ mod tests {
         // different (wrong) address — not the batch owner.
         stamp_bytes[BATCH_ID] ^= 0xff;
         let stamp = Stamp::parse(&stamp_bytes).unwrap();
-        assert!(!valid(&addr, &stamp, &owner), "tampered stamp must not validate as owner");
+        assert!(
+            !valid(&addr, &stamp, &owner),
+            "tampered stamp must not validate as owner"
+        );
     }
 
     /// The same stamp bound to a different chunk address fails — a stamp is
@@ -154,6 +174,9 @@ mod tests {
         let stamp_bytes = sign_stamp(&key, &addr, &[2; 32], &[0; 8], &[0; 8]);
         let stamp = Stamp::parse(&stamp_bytes).unwrap();
         assert!(valid(&addr, &stamp, &owner));
-        assert!(!valid(&other, &stamp, &owner), "stamp must not validate for other content");
+        assert!(
+            !valid(&other, &stamp, &owner),
+            "stamp must not validate for other content"
+        );
     }
 }

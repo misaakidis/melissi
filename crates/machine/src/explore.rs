@@ -108,7 +108,11 @@ fn init(sc: &Scenario) -> World {
             m.arrive_hist(c);
         }
     }
-    World { m, tmo: sc.timeout_budget, chn: sc.churn_budget }
+    World {
+        m,
+        tmo: sc.timeout_budget,
+        chn: sc.churn_budget,
+    }
 }
 
 fn enabled(sc: &Scenario, w: &World) -> Vec<Act> {
@@ -143,7 +147,10 @@ fn enabled(sc: &Scenario, w: &World) -> Vec<Act> {
                 continue;
             }
             let holders: Vec<PeerId> =
-                w.m.holders.get(&c).map(|s| s.iter().copied().collect()).unwrap_or_default();
+                w.m.holders
+                    .get(&c)
+                    .map(|s| s.iter().copied().collect())
+                    .unwrap_or_default();
             for &p in &holders {
                 // Lose(c, p): another honest holder must survive the loss.
                 if holders.iter().any(|&q| q != p && sc.honest(q)) {
@@ -197,12 +204,11 @@ fn check_env_invariants(sc: &Scenario, w: &World) -> Result<(), &'static str> {
     w.m.check_invariants()?;
     // SupplyInv: churn never strips a chunk of its last honest holder.
     for &c in sc.chunks {
-        let ok = w
-            .m
-            .holders
-            .get(&c)
-            .map(|hs| hs.iter().any(|&p| sc.honest(p)))
-            .unwrap_or(false);
+        let ok =
+            w.m.holders
+                .get(&c)
+                .map(|hs| hs.iter().any(|&p| sc.honest(p)))
+                .unwrap_or(false);
         if !ok {
             return Err("SupplyInv");
         }

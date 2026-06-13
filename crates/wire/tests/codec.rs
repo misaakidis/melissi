@@ -16,7 +16,10 @@ fn varint_roundtrip() {
 #[test]
 fn framing_is_length_delimited() {
     let m1 = Get { bin: 3, start: 100 }.encode();
-    let m2 = Want { bitvector: vec![0xff, 0x01] }.encode();
+    let m2 = Want {
+        bitvector: vec![0xff, 0x01],
+    }
+    .encode();
     let mut stream = frame(&m1);
     stream.extend(frame(&m2));
 
@@ -28,7 +31,11 @@ fn framing_is_length_delimited() {
 
 #[test]
 fn deframe_needs_full_message() {
-    let m = Offer { topmost: 9, chunks: vec![] }.encode();
+    let m = Offer {
+        topmost: 9,
+        chunks: vec![],
+    }
+    .encode();
     let framed = frame(&m);
     assert!(deframe(&framed[..framed.len() - 1]).is_none()); // truncated
     assert!(deframe(&framed).is_some());
@@ -48,8 +55,16 @@ fn offer_roundtrip_with_chunks() {
     let o = Offer {
         topmost: 42,
         chunks: vec![
-            Chunk { address: vec![1; 32], batch_id: vec![2; 32], stamp_hash: vec![3; 32] },
-            Chunk { address: vec![4; 32], batch_id: vec![5; 32], stamp_hash: vec![6; 32] },
+            Chunk {
+                address: vec![1; 32],
+                batch_id: vec![2; 32],
+                stamp_hash: vec![3; 32],
+            },
+            Chunk {
+                address: vec![4; 32],
+                batch_id: vec![5; 32],
+                stamp_hash: vec![6; 32],
+            },
         ],
     };
     assert_eq!(Offer::decode(&o.encode()).unwrap(), o);
@@ -57,14 +72,21 @@ fn offer_roundtrip_with_chunks() {
 
 #[test]
 fn ack_cursors_packed_roundtrip() {
-    let a = Ack { cursors: vec![0, 5, 250, 100000], epoch: 7 };
+    let a = Ack {
+        cursors: vec![0, 5, 250, 100000],
+        epoch: 7,
+    };
     let decoded = Ack::decode(&a.encode()).unwrap();
     assert_eq!(decoded, a);
 }
 
 #[test]
 fn delivery_roundtrip() {
-    let d = Delivery { address: vec![9; 32], data: vec![0xab; 64], stamp: vec![0xcd; 113] };
+    let d = Delivery {
+        address: vec![9; 32],
+        data: vec![0xab; 64],
+        stamp: vec![0xcd; 113],
+    };
     assert_eq!(Delivery::decode(&d.encode()).unwrap(), d);
 }
 

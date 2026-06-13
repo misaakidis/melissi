@@ -46,9 +46,13 @@ impl MintedCodec {
     /// A codec keyed by a 32-byte owner secret and a batch id seed.
     pub fn new(owner_secret: [u8; 32], batch_seed: u8) -> Self {
         let key = SigningKey::from_bytes(&owner_secret.into()).expect("valid secret");
-        let owner =
-            postage::eth_address(key.verifying_key().to_encoded_point(false).as_bytes());
-        MintedCodec { key, owner, batch_id: [batch_seed; 32], store: BTreeMap::new() }
+        let owner = postage::eth_address(key.verifying_key().to_encoded_point(false).as_bytes());
+        MintedCodec {
+            key,
+            owner,
+            batch_id: [batch_seed; 32],
+            store: BTreeMap::new(),
+        }
     }
 
     /// Mint a chunk from a payload: real BMT address, real signed stamp, with
@@ -89,16 +93,26 @@ impl TripleCodec for MintedCodec {
         c.stamp_hash.to_vec()
     }
     fn stamp(&self, c: Triple) -> Vec<u8> {
-        self.store.get(&c).map(|(_, s)| s.clone()).unwrap_or_default()
+        self.store
+            .get(&c)
+            .map(|(_, s)| s.clone())
+            .unwrap_or_default()
     }
     fn data(&self, c: Triple) -> Vec<u8> {
-        self.store.get(&c).map(|(d, _)| d.clone()).unwrap_or_default()
+        self.store
+            .get(&c)
+            .map(|(d, _)| d.clone())
+            .unwrap_or_default()
     }
     fn triple_of(&self, address: &[u8], batch_id: &[u8], stamp_hash: &[u8]) -> Option<Triple> {
         if address.len() != 32 || batch_id.len() != 32 || stamp_hash.len() != 32 {
             return None;
         }
-        Some(Triple::new(to_arr(address), to_arr(batch_id), to_arr(stamp_hash)))
+        Some(Triple::new(
+            to_arr(address),
+            to_arr(batch_id),
+            to_arr(stamp_hash),
+        ))
     }
     fn triple_of_delivery(&self, d: &pb::Delivery) -> Option<Triple> {
         if d.address.len() != 32 || d.stamp.len() != postage::STAMP_SIZE {
@@ -106,7 +120,11 @@ impl TripleCodec for MintedCodec {
         }
         let stamp = postage::Stamp::parse(&d.stamp)?;
         let stamp_hash = bmt::keccak(&d.stamp);
-        Some(Triple::new(to_arr(&d.address), to_arr(stamp.batch_id()), stamp_hash))
+        Some(Triple::new(
+            to_arr(&d.address),
+            to_arr(stamp.batch_id()),
+            stamp_hash,
+        ))
     }
     fn validate(&self, c: Triple, d: &pb::Delivery) -> Outcome {
         // 1. content self-verification: the delivered bytes must BMT-hash to
