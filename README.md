@@ -14,6 +14,7 @@ parity tests re-check the same ablation matrix on the shipped code.
 | crate | refines | status |
 |---|---|---|
 | `crates/types` | the identity seam: the real `Triple` = `(address, batchID, stampHash)`. The whole stack instantiates the machine over this; tests use `Triple::mock(n)` (scheduling is content-agnostic) | ✓ |
+| `crates/overlay` | proximity order + overlay address — the fundamentals that *define* the reserve (proximity ≥ radius) and neighbourhood (design §3, §4). Byte-exact vs bee's `pkg/swarm`/`pkg/crypto` vectors | M3-b ✓ |
 | `crates/machine` | `PullSyncerE.tla` — the scheduling machine, **polymorphic in the chunk identity `C`** (it needs only `Copy + Ord + Hash` — it schedules, it never verifies). Model-checked over abstract `u32` ids (exact TLC state-count parity), run over the real `Triple` | M0 ✓ |
 | `crates/settlement` | `IntervalSettlement.tla` — settle before you forget; the interval is a `u64` high-water, so eager advance and disconnected ranges are unrepresentable | M1 ✓ |
 | `crates/node` | the sans-io core (events → effects) over `PullState<Triple>`; want-by-reference, one open offer per `(peer, bin)`, settlement the only durable transition | M1 ✓ |
@@ -22,7 +23,7 @@ parity tests re-check the same ablation matrix on the shipped code.
 | `crates/wire` (`bmt`) | bee's chunk address — BMT over keccak256 — reproduced **byte-exactly**, verified against bee's `pkg/cac` vectors. melissi and bee agree on addresses | M3-b ✓ |
 | `crates/wire` (`postage`) | bee's postage stamp — secp256k1 recovery over bee's exact digest, eth-prefixed → batch-owner address. The **entry-fault** half of self-verification | M3-b ✓ |
 | `crates/wire` (`codec`) | `MintedCodec`: mints real content-addressed, stamped chunks and validates deliveries — `bmt` mismatch → `Missed` (peer-fault, local), bad stamp → `Rejected` (entry-fault, global), both ok → `Delivered`, all from the bytes alone | M3-b ✓ |
-| `crates/net` | rust-libp2p transport + bzz handshake; **live bee devnet interop** (the one step needing a running bee node — all offline-verifiable pieces are done) | M3-b network |
+| `crates/net` | rust-libp2p transport + bzz handshake + discovery; the bin-relativity wiring (a chunk's bin is its proximity to *this* node's overlay, computed by `overlay`, not trusted from the wire); **live bee devnet/mainnet interop**. The one part that needs a running peer to verify — left unbuilt rather than guessed | M3-b network |
 
 ## Verification
 

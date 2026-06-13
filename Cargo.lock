@@ -216,6 +216,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissi-overlay"
+version = "0.1.0"
+dependencies = [
+ "melissi-types",
+ "tiny-keccak",
+]
+
+[[package]]
 name = "melissi-settlement"
 version = "0.1.0"
 dependencies = [
