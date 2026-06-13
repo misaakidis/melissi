@@ -10,3 +10,4 @@ melissi-types = { path = "../types" }
 melissi-machine = { path = "../machine" }
 melissi-node = { path = "../node" }
 melissi-settlement = { path = "../settlement" }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }

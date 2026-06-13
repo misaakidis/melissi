@@ -18,13 +18,15 @@
 //! and reads the stamp marker; it never consults shared state. That is
 //! self-verification, the property that collapses pull's quorum to 1-of-n.
 //!
-//! The hash here is a self-contained FNV-1a (zero dependencies, deterministic)
-//! — a PLACEHOLDER. bee's address is a BMT over keccak256 of the 4 KB chunk;
-//! swapping it in for interop is a change to this file alone, behind the
-//! unchanged `TripleCodec` trait.
+//! The address is now bee's real BMT-over-keccak256 ([`crate::bmt`], verified
+//! against bee's `pkg/cac` test vector), so a melissi address equals a bee
+//! address for the same bytes — content-addressing is interop-exact. The
+//! stamp is still structural (a validity marker, not yet a secp256k1
+//! signature); that is the one remaining placeholder, swapped at devnet
+//! interop behind the unchanged `TripleCodec` trait.
 
 use crate::adapter::TripleCodec;
-use crate::pb;
+use crate::{bmt, pb};
 use melissi_node::Outcome;
 use melissi_types::Triple;
 use std::collections::BTreeSet;
@@ -32,19 +34,14 @@ use std::collections::BTreeSet;
 const VALID: u8 = 0x01;
 const BAD: u8 = 0x00;
 
-/// FNV-1a over the bytes, spread to 32 bytes by re-hashing with a counter.
-/// Collision-resistant enough for deterministic tests; not cryptographic.
+/// bee's chunk address: the BMT over keccak256. Interop-exact.
+fn address_of(data: &[u8]) -> Vec<u8> {
+    bmt::chunk_address(data).to_vec()
+}
+
+/// keccak256, for binding the stamp (bee uses keccak256, not the BMT, here).
 fn hash32(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(32);
-    for round in 0..4u8 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ u64::from(round);
-        for &b in data {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        out.extend_from_slice(&h.to_be_bytes());
-    }
-    out
+    bmt::keccak(data).to_vec()
 }
 
 /// A content-addressing codec. `bad_stamps` are the triples whose batches are
@@ -89,7 +86,7 @@ impl Default for ContentCodec {
 
 impl TripleCodec for ContentCodec {
     fn address(&self, c: Triple) -> Vec<u8> {
-        hash32(&Self::payload(c)) // CAC: address IS the content hash
+        address_of(&Self::payload(c)) // CAC: address IS the BMT content hash (bee-exact)
     }
     fn batch_id(&self, c: Triple) -> Vec<u8> {
         let mut b = vec![0xBB; 32];
@@ -129,8 +126,8 @@ impl TripleCodec for ContentCodec {
     }
     fn validate(&self, c: Triple, d: &pb::Delivery) -> Outcome {
         // 1. content-address check, from the bytes alone: do the delivered
-        //    bytes hash to the address we asked for?
-        if hash32(&d.data) != self.address(c) {
+        //    bytes BMT-hash to the address we asked for?
+        if address_of(&d.data) != self.address(c) {
             return Outcome::Missed; // peer-fault: garbage / wrong chunk — retry elsewhere
         }
         // 2. stamp validity, from the delivered stamp alone
