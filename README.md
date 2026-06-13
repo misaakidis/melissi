@@ -20,7 +20,8 @@ parity tests re-check the same ablation matrix on the shipped code.
 | `crates/wire` | bee's `pkg/pullsync` protobuf + delimited framing + LSB-first bitvector (byte-verified vs master), and the adapter mapping core effects onto the legacy coupling (positional bitvector, re-offer-on-fetch, zero-address). Wire-level self-play converges at the floor and fails over an omitter | M3-a ✓ |
 | `crates/wire` (`bmt`) | bee's chunk address — BMT over keccak256 — reproduced **byte-exactly**, verified against bee's `pkg/cac` test vector (`"greaterthanspan"` → `27913f1b…`) and the empty-chunk address. melissi and bee agree on addresses: the interop-determining computation | M3-b codec ✓ |
 | `crates/wire` (`codec`) | `ContentCodec`: the three-way `Delivered`/`Rejected`/`Missed` split flows from validation (peer-fault local, entry-fault global), self-verified from the bytes — now over the **real BMT address**. Stamp is still a structural marker (secp256k1 at interop) | M3-b codec ✓ |
-| `crates/net` | rust-libp2p transport + secp256k1 handshake + bzz protocol; the real postage-stamp signature into the codec; **live bee devnet interop** (needs a running bee node) | M3-b network |
+| `crates/wire` (`postage`) | bee's postage stamp — secp256k1 recovery over bee's exact digest (`keccak256(addr‖batchID‖index‖timestamp)`, eth-prefixed) → batch-owner address. The **entry-fault** half of self-verification: an invalid/replayed stamp recovers the wrong owner → `Rejected`, globally. Round-trip verified | M3-b codec ✓ |
+| `crates/net` | rust-libp2p transport + bzz/secp256k1 handshake; **live bee devnet interop** (the one step needing a running bee node — all offline-verifiable pieces are done) | M3-b network |
 
 ## Verification
 

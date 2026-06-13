@@ -7,6 +7,9 @@ use melissi_node::Outcome;
 use melissi_wire::adapter::TripleCodec;
 use melissi_wire::codec::ContentCodec;
 use melissi_wire::pb::Delivery;
+use melissi_wire::{bmt, postage};
+
+use k256::ecdsa::{signature::hazmat::PrehashSigner, RecoveryId, Signature, SigningKey};
 
 /// What an honest holder of triple `c` puts on the wire.
 fn honest_delivery(codec: &ContentCodec, c: u32) -> Delivery {
@@ -73,6 +76,66 @@ fn the_triple_identity_changes_with_validity() {
     bad.mark_bad_stamp(5);
     assert_eq!(good.address(5), bad.address(5), "same content, same address");
     assert_ne!(good.stamp_hash(5), bad.stamp_hash(5), "different stamp, different triple");
+}
+
+/// End-to-end with REAL crypto: a delivery's outcome derived from bee's
+/// actual BMT address and a real secp256k1-signed stamp — the three-way split
+/// flowing from cryptography, not the sim's structural marker.
+///   - correct bytes + valid stamp → Delivered
+///   - wrong bytes (BMT mismatch)  → Missed   (peer-fault, local)
+///   - correct bytes + bad stamp   → Rejected (entry-fault, global)
+#[test]
+fn real_crypto_drives_the_three_way_split() {
+    let key = SigningKey::from_bytes(&[3u8; 32].into()).unwrap();
+    let owner = {
+        let vk = key.verifying_key();
+        postage::eth_address(vk.to_encoded_point(false).as_bytes())
+    };
+    let payload = b"a real swarm chunk payload".to_vec();
+    let addr = bmt::chunk_address(&payload).to_vec();
+
+    let signed_stamp = |chunk_addr: &[u8]| -> Vec<u8> {
+        let (bid, idx, ts) = ([5u8; 32], [0u8; 8], [0u8; 8]);
+        let digest = postage::to_sign_digest(chunk_addr, &bid, &idx, &ts);
+        let prehash = postage::eth_prefixed(&digest);
+        let (sig, recid): (Signature, RecoveryId) = key.sign_prehash(&prehash).unwrap();
+        let mut s = Vec::new();
+        s.extend_from_slice(&bid);
+        s.extend_from_slice(&idx);
+        s.extend_from_slice(&ts);
+        s.extend_from_slice(&sig.to_bytes());
+        s.push(recid.to_byte());
+        s
+    };
+
+    // the real validation a TripleCodec::validate would perform at interop
+    let outcome = |d: &Delivery| -> Outcome {
+        if bmt::chunk_address(&d.data).to_vec() != addr {
+            return Outcome::Missed; // peer-fault: bytes don't hash to the address
+        }
+        match postage::Stamp::parse(&d.stamp) {
+            Some(st) if postage::valid(&addr, &st, &owner) => Outcome::Delivered,
+            _ => Outcome::Rejected, // entry-fault: stamp doesn't recover the owner
+        }
+    };
+
+    // honest delivery
+    let good = Delivery { address: addr.clone(), data: payload.clone(), stamp: signed_stamp(&addr) };
+    assert_eq!(outcome(&good), Outcome::Delivered);
+
+    // garbage bytes — a real BMT mismatch
+    let mut garbage = good.clone();
+    garbage.data[0] ^= 0xff;
+    assert_eq!(outcome(&garbage), Outcome::Missed);
+
+    // a stamp signed for a DIFFERENT chunk (replayed) — recovers an address,
+    // but bound to other content, so invalid here → entry-fault
+    let replayed = Delivery {
+        address: addr.clone(),
+        data: payload.clone(),
+        stamp: signed_stamp(&bmt::chunk_address(b"some other chunk").to_vec()),
+    };
+    assert_eq!(outcome(&replayed), Outcome::Rejected);
 }
 
 #[test]
