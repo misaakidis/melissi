@@ -33,11 +33,9 @@ pub mod explore;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// An accountable reserve entry `(address, batchID, stampHash)`, opaque at this
-/// layer. Production widens this to the real triple; the machine never looks
-/// inside it.
-pub type Triple = u32;
-pub type PeerId = u8;
+// The identity seam is single-sourced in `melissi-types`; re-exported so
+// downstream `use melissi_machine::{Triple, PeerId}` keeps resolving.
+pub use melissi_types::{PeerId, Triple};
 
 /// The design knobs, mirroring the spec's `CONSTANT`s. Production ships
 /// [`Config::PRODUCTION`]; the rest exist so the parity tests can run the same

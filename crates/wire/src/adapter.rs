@@ -18,10 +18,8 @@
 use crate::pb;
 use melissi_node::Outcome;
 use melissi_settlement::BinId;
+use melissi_types::{Bin, Triple};
 use std::collections::BTreeMap;
-
-pub type Triple = u32;
-pub type Bin = u8;
 
 /// The boundary where real content lands later (BMT hashing, postage stamp
 /// validation — M3-b). For wire self-play the codec is synthetic and the

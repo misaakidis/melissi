@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "melissi-machine"
 version = "0.1.0"
+dependencies = [
+ "melissi-types",
+]
 
 [[package]]
 name = "melissi-node"
@@ -12,11 +15,15 @@ version = "0.1.0"
 dependencies = [
  "melissi-machine",
  "melissi-settlement",
+ "melissi-types",
 ]
 
 [[package]]
 name = "melissi-settlement"
 version = "0.1.0"
+dependencies = [
+ "melissi-types",
+]
 
 [[package]]
 name = "melissi-sim"
@@ -25,7 +32,12 @@ dependencies = [
  "melissi-machine",
  "melissi-node",
  "melissi-settlement",
+ "melissi-types",
 ]
+
+[[package]]
+name = "melissi-types"
+version = "0.1.0"
 
 [[package]]
 name = "melissi-wire"
@@ -34,4 +46,5 @@ dependencies = [
  "melissi-machine",
  "melissi-node",
  "melissi-settlement",
+ "melissi-types",
 ]

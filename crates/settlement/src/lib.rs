@@ -25,8 +25,9 @@
 
 use std::collections::BTreeMap;
 
-pub type Triple = u32;
-pub type BinId = u64;
+// The identity seam is single-sourced in `melissi-types`; re-exported so
+// downstream `use melissi_settlement::{Triple, BinId}` keeps resolving.
+pub use melissi_types::{BinId, Triple};
 
 /// The resume state for one `(peer, bin)`: the persisted interval high-water
 /// plus the offered, not-yet-settled window above it.

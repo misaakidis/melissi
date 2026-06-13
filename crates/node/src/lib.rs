@@ -21,11 +21,16 @@
 //! is emitted exactly when a `(peer, bin)` high-water advances — the shell
 //! persists it; everything else is soft state, rebuilt from offers.
 
+mod discovery;
+use discovery::Discovery;
+
 use melissi_machine::{Config, PeerId, PullState, Triple};
 use melissi_settlement::{BinId, PeerBinLog};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub type Bin = u8;
+// `Bin` from the single-sourced identity seam; re-exported so downstream
+// `use melissi_node::Bin` keeps resolving.
+pub use melissi_types::Bin;
 
 /// What the shell reports per wanted triple. The three-way split is
 /// load-bearing (never collapse): a peer-fault retries elsewhere, an
@@ -88,27 +93,15 @@ pub struct Node {
     logs: BTreeMap<(PeerId, Bin), PeerBinLog>,
     /// Which bin each known triple lives in (its PO depth = its priority).
     bin_of: BTreeMap<Triple, Bin>,
-    /// One open offer per (peer, bin) — the live subscription discipline.
-    offer_open: BTreeSet<(PeerId, Bin)>,
     /// Cumulative fetch assignments per peer — the routing key. Policy state
     /// only (provably-neutral): the §5.3 fairness floor is about REALISED
     /// serve totals, and outstanding load alone is history-blind — it
     /// balances within a wave but skews across waves (deeper bins schedule
     /// first). Outstanding load (`m.load`) stays as the tiebreak.
     assigned: BTreeMap<PeerId, u64>,
-    /// The discovery barrier (design §5.6: receive every neighbour's
-    /// advertisements, record the holders per chunk — THEN fetch). A
-    /// `(peer, bin)` resolves when its first offer answers, or already at
-    /// `GetCursors` when the peer has nothing in the HIST range. Scheduling a
-    /// bin before every peer resolved would hand the whole backlog to
-    /// whichever peer answered first — the fairness floor (O5) needs the
-    /// choice set assembled before routing chooses.
-    hist_resolved: BTreeSet<(PeerId, Bin)>,
-    /// Peers whose cursors have arrived. Readiness must quantify over every
-    /// KNOWN peer, not every peer whose cursors happen to have landed —
-    /// else the first peer through discovery looks like the whole choice set
-    /// and receives the whole wave.
-    cursored: BTreeSet<PeerId>,
+    /// The discovery barrier (design §5.6): the choice set assembles before
+    /// routing chooses, else the first peer answered hands the whole backlog.
+    disc: Discovery,
 }
 
 impl Node {
@@ -120,10 +113,8 @@ impl Node {
             cursors: BTreeMap::new(),
             logs: BTreeMap::new(),
             bin_of: BTreeMap::new(),
-            offer_open: BTreeSet::new(),
             assigned: BTreeMap::new(),
-            hist_resolved: BTreeSet::new(),
-            cursored: BTreeSet::new(),
+            disc: Discovery::new(),
         }
     }
 
@@ -155,15 +146,13 @@ impl Node {
                 }
                 self.logs.retain(|&(q, _), _| q != p);
                 self.cursors.retain(|&(q, _), _| q != p);
-                self.offer_open.retain(|&(q, _)| q != p);
-                self.hist_resolved.retain(|&(q, _)| q != p);
-                self.cursored.remove(&p);
+                self.disc.forget_peer(p);
                 // released claims may be re-routable right away
                 self.round(None)
             }
 
             Event::CursorsResult { peer, cursors } => {
-                self.cursored.insert(peer);
+                self.disc.mark_cursored(peer);
                 let mut fx = Vec::new();
                 for (bin, head) in cursors {
                     if bin < self.radius {
@@ -174,9 +163,9 @@ impl Node {
                     if head < log.next() {
                         // nothing in the HIST range: resolved without an
                         // answer (the standing offer is the LIVE tail)
-                        self.hist_resolved.insert((peer, bin));
+                        self.disc.resolve(peer, bin);
                     }
-                    if self.offer_open.insert((peer, bin)) {
+                    if self.disc.try_open(peer, bin) {
                         fx.push(Effect::Offer { peer, bin, start: log.next() });
                     }
                 }
@@ -184,8 +173,8 @@ impl Node {
             }
 
             Event::OfferResult { peer, bin, start, refs, topmost } => {
-                self.offer_open.remove(&(peer, bin));
-                self.hist_resolved.insert((peer, bin));
+                self.disc.close(peer, bin);
+                self.disc.resolve(peer, bin);
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
                 let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
                 // An answer covers at least what was asked: a hostile
@@ -230,7 +219,7 @@ impl Node {
                 let mut fx = Vec::new();
                 let keys: Vec<(PeerId, Bin)> = self.logs.keys().copied().collect();
                 for (peer, bin) in keys {
-                    if self.peers.contains(&peer) && self.offer_open.insert((peer, bin)) {
+                    if self.peers.contains(&peer) && self.disc.try_open(peer, bin) {
                         let start = self.logs[&(peer, bin)].next();
                         fx.push(Effect::Offer { peer, bin, start });
                     }
@@ -284,7 +273,7 @@ impl Node {
             let covered = self.logs[&key].topmost();
             if next > covered
                 && self.peers.contains(&key.0)
-                && self.offer_open.insert(key)
+                && self.disc.try_open(key.0, key.1)
             {
                 fx.push(Effect::Offer { peer: key.0, bin: key.1, start: next });
             }
@@ -309,7 +298,12 @@ impl Node {
                 .m
                 .enabled_wants()
                 .into_iter()
-                .filter(|(c, _)| self.bin_ready(self.bin_of.get(c).copied().unwrap_or(0)))
+                .filter(|(c, _)| {
+                    let bin = self.bin_of.get(c).copied().unwrap_or(0);
+                    self.disc.bin_ready(bin, self.peers.iter().copied(), |p| {
+                        self.cursors.contains_key(&(p, bin))
+                    })
+                })
                 .collect();
             if enabled.is_empty() {
                 break;
@@ -337,17 +331,6 @@ impl Node {
             fx.push(Effect::Fetch { peer, bin, want });
         }
         fx
-    }
-
-    /// The choice set for this bin is assembled: every known peer has
-    /// reported cursors, and every peer that lists the bin has resolved its
-    /// HIST range (answered, or had nothing to offer).
-    fn bin_ready(&self, bin: Bin) -> bool {
-        self.peers.iter().all(|&p| {
-            self.cursored.contains(&p)
-                && (!self.cursors.contains_key(&(p, bin))
-                    || self.hist_resolved.contains(&(p, bin)))
-        })
     }
 
     // --- observability ---------------------------------------------------------

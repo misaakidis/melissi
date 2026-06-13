@@ -6,3 +6,4 @@ license.workspace = true
 description = "pullstate: the optimal pull-sync scheduling machine, a 1:1 refinement of PullSyncerE.tla"
 
 [dependencies]
+melissi-types = { path = "../types" }

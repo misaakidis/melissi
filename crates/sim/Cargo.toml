@@ -6,6 +6,7 @@ license.workspace = true
 description = "deterministic self-play: k symmetric nodes over a seeded network — the quantitative floors, measured"
 
 [dependencies]
+melissi-types = { path = "../types" }
 melissi-machine = { path = "../machine" }
 melissi-node = { path = "../node" }
 melissi-settlement = { path = "../settlement" }

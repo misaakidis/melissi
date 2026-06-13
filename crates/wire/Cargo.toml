@@ -6,6 +6,7 @@ license.workspace = true
 description = "the bee wire: pullsync protobuf + delimited framing + the bee-wire adapter (positional bitvector, re-offer, paging)"
 
 [dependencies]
+melissi-types = { path = "../types" }
 melissi-machine = { path = "../machine" }
 melissi-node = { path = "../node" }
 melissi-settlement = { path = "../settlement" }

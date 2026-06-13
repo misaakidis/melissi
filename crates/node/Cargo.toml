@@ -6,5 +6,6 @@ license.workspace = true
 description = "the sans-io pull-sync node core: events in, effects out, no I/O, no clock, no threads"
 
 [dependencies]
+melissi-types = { path = "../types" }
 melissi-machine = { path = "../machine" }
 melissi-settlement = { path = "../settlement" }

@@ -6,3 +6,4 @@ license.workspace = true
 description = "interval settlement: settle before you forget — a refinement of IntervalSettlement.tla"
 
 [dependencies]
+melissi-types = { path = "../types" }

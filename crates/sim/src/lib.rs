@@ -24,10 +24,9 @@
 
 use melissi_node::{Bin, Effect, Event, Node, Outcome};
 use melissi_settlement::BinId;
+// re-exported: `Triple` is in the sim's public surface (bin_of, Sim methods)
+pub use melissi_types::{PeerId, Triple};
 use std::collections::{BTreeMap, BTreeSet};
-
-pub type Triple = u32;
-pub type PeerId = u8;
 
 pub const NBINS: u8 = 2;
 pub const RADIUS: Bin = 1;
