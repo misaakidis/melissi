@@ -26,3 +26,12 @@ dependencies = [
  "melissi-node",
  "melissi-settlement",
 ]
+
+[[package]]
+name = "melissi-wire"
+version = "0.1.0"
+dependencies = [
+ "melissi-machine",
+ "melissi-node",
+ "melissi-settlement",
+]
