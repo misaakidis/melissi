@@ -42,54 +42,9 @@ pub trait TripleCodec {
     fn validate(&self, c: Triple, d: &pb::Delivery) -> Outcome;
 }
 
-/// Synthetic identities for deterministic self-play: every field derived
-/// from the triple id, stamp = batchID ‖ stampHash ‖ zero-padding to 113.
-pub struct SyntheticCodec;
-
-fn tagged(c: Triple, tag: u8) -> Vec<u8> {
-    let mut b = vec![tag; 32];
-    b[..4].copy_from_slice(&c.to_be_bytes());
-    b
-}
-
-impl TripleCodec for SyntheticCodec {
-    fn address(&self, c: Triple) -> Vec<u8> {
-        tagged(c, 0xAA)
-    }
-    fn batch_id(&self, c: Triple) -> Vec<u8> {
-        tagged(c, 0xBB)
-    }
-    fn stamp_hash(&self, c: Triple) -> Vec<u8> {
-        tagged(c, 0xCC)
-    }
-    fn stamp(&self, c: Triple) -> Vec<u8> {
-        let mut s = self.batch_id(c);
-        s.extend_from_slice(&self.stamp_hash(c));
-        s.resize(113, 0);
-        s
-    }
-    fn data(&self, c: Triple) -> Vec<u8> {
-        let mut d = vec![0xDD; 64];
-        d[..4].copy_from_slice(&c.to_be_bytes());
-        d
-    }
-    fn triple_of(&self, address: &[u8], _batch_id: &[u8], _stamp_hash: &[u8]) -> Option<Triple> {
-        address.get(..4).map(|b| Triple::from_be_bytes(b.try_into().unwrap()))
-    }
-    fn triple_of_delivery(&self, d: &pb::Delivery) -> Option<Triple> {
-        if d.stamp.len() != 113 {
-            return None;
-        }
-        self.triple_of(&d.address, &d.stamp[..32], &d.stamp[32..64])
-    }
-    fn validate(&self, c: Triple, d: &pb::Delivery) -> Outcome {
-        if d.data == self.data(c) {
-            Outcome::Delivered
-        } else {
-            Outcome::Missed // garbage: peer-fault, retry elsewhere
-        }
-    }
-}
+// The real codec — minting + content/payment self-verification over the real
+// triple — lives in `crate::codec::MintedCodec`. There is no synthetic codec:
+// once `Triple` is `(address, batchID, stampHash)`, identity is not invented.
 
 /// What a client state machine wants the shell to do next.
 pub enum ClientOut {

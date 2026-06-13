@@ -15,8 +15,14 @@ use melissi_sim::{bin_of, Sim, Triple};
 
 const M: u32 = 24;
 
+/// Readable chunk number → real triple (scheduling/floor tests are content-
+/// agnostic; only distinctness and bin placement matter).
+fn t(n: u32) -> Triple {
+    Triple::mock(n)
+}
+
 fn universe() -> Vec<Triple> {
-    (0..M).collect()
+    (0..M).map(t).collect()
 }
 
 /// Cold start: one empty node joins k−1 full ones. The headline scenario —
@@ -57,8 +63,8 @@ fn epidemic_reaches_theta_rep_at_the_delivery_floor() {
     let k = 4usize;
     for seed in 0..5u64 {
         let mut sim = Sim::new(k, &[], seed);
-        for c in universe() {
-            sim.seed(c as usize % k, c);
+        for n in 0..M {
+            sim.seed(n as usize % k, t(n));
         }
         sim.spurious_budget = 3;
         sim.start();
@@ -101,8 +107,8 @@ fn byzantine_omitter_costs_rounds_not_the_floor() {
 fn live_arrivals_spread_to_all_nodes() {
     let k = 4usize;
     let mut sim = Sim::new(k, &[], 7);
-    for c in universe() {
-        sim.seed(c as usize % k, c);
+    for n in 0..M {
+        sim.seed(n as usize % k, t(n));
     }
     sim.start();
     sim.run();
@@ -110,13 +116,13 @@ fn live_arrivals_spread_to_all_nodes() {
     let before: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
 
     // two uploads land at different nodes, in different bins
-    sim.arrive(0, 100);
-    sim.arrive(2, 101);
-    assert_ne!(bin_of(100), bin_of(101));
+    sim.arrive(0, t(100));
+    sim.arrive(2, t(101));
+    assert_ne!(bin_of(t(100)), bin_of(t(101)));
     sim.run();
 
     for i in 0..k {
-        assert!(sim.node_has(i, 100) && sim.node_has(i, 101), "node {i} missing a LIVE chunk");
+        assert!(sim.node_has(i, t(100)) && sim.node_has(i, t(101)), "node {i} missing a LIVE chunk");
         assert_eq!(sim.deficit(i), 0);
     }
     let after: u64 = (0..k).map(|i| sim.deliveries(i)).sum();
@@ -130,7 +136,7 @@ fn live_arrivals_spread_to_all_nodes() {
 fn small_gap_resync_fetches_only_the_gap() {
     for seed in 0..5u64 {
         let mut sim = Sim::new(3, &[], seed);
-        let gap: Vec<Triple> = vec![5, 11, 17];
+        let gap: Vec<Triple> = vec![t(5), t(11), t(17)];
         for c in universe() {
             sim.seed(1, c);
             sim.seed(2, c);

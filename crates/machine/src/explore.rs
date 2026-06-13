@@ -18,7 +18,12 @@
 //!     livelock);
 //!   - freshness: every terminal state has the LIVE arrivals stored.
 
-use crate::{Config, PeerId, PullState, Triple};
+use crate::{Config, PeerId, PullState};
+
+/// The abstract chunk identity for model-checking: small, enumerable, exact
+/// state counts. The real wire instantiates the same machine over
+/// `melissi_types::Cid`; the explorer only needs distinct, ordered tokens.
+pub type Cid = u32;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// One row of the matrix: the constants of an `MC_*.tla` config.
@@ -26,17 +31,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 pub struct Scenario {
     pub name: &'static str,
     pub cfg: Config,
-    pub chunks: &'static [Triple],
+    pub chunks: &'static [Cid],
     pub peers: &'static [PeerId],
     /// `Holds`: per-peer initial holdings.
-    pub holds: &'static [(PeerId, &'static [Triple])],
+    pub holds: &'static [(PeerId, &'static [Cid])],
     pub byzantine: &'static [PeerId],
     /// `LiveChunks`: arrive during sync via `NewChunk`.
-    pub live: &'static [Triple],
+    pub live: &'static [Cid],
     /// `Prio`: bin depth per triple (only read when `cfg.priority`).
-    pub prio: &'static [(Triple, u8)],
+    pub prio: &'static [(Cid, u8)],
     /// `Assign`: the single-source ablation's fixed source.
-    pub assign: &'static [(Triple, PeerId)],
+    pub assign: &'static [(Cid, PeerId)],
     /// `TimeoutBudget`: max spurious stalls of honest peers.
     pub timeout_budget: u8,
     /// `ChurnBudget`: max Lose/Gain events, supply-preserving.
@@ -52,7 +57,7 @@ impl Scenario {
 /// The explored state: the machine plus the environment's budgets.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct World {
-    m: PullState,
+    m: PullState<Cid>,
     tmo: u8,
     chn: u8,
 }
@@ -60,15 +65,15 @@ struct World {
 /// Every action the environment can take — the model's `Next` disjuncts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Act {
-    Want(Triple, PeerId),
-    Deliver(Triple, PeerId),
+    Want(Cid, PeerId),
+    Deliver(Cid, PeerId),
     /// `ByzStall` or `SpuriousTimeout` — one verb; honesty + budget decide
     /// enabledness here, in the environment, exactly as in the spec.
-    Stall(Triple, PeerId),
-    Lose(Triple, PeerId),
-    Gain(Triple, PeerId),
-    New(Triple),
-    Reset(Triple),
+    Stall(Cid, PeerId),
+    Lose(Cid, PeerId),
+    Gain(Cid, PeerId),
+    New(Cid),
+    Reset(Cid),
 }
 
 pub struct Report {
@@ -86,7 +91,7 @@ pub struct Report {
 }
 
 fn init(sc: &Scenario) -> World {
-    let mut m = PullState::new(sc.cfg);
+    let mut m = PullState::<Cid>::new(sc.cfg);
     for &(p, cs) in sc.holds {
         for &c in cs {
             m.observe_holder(c, p);
@@ -217,8 +222,8 @@ fn check_env_invariants(sc: &Scenario, w: &World) -> Result<(), &'static str> {
 /// Exhaustive BFS over all interleavings; then cycle detection on the
 /// reachable graph (iterative three-colour DFS).
 pub fn explore(sc: &Scenario) -> Report {
-    let chunks: BTreeSet<Triple> = sc.chunks.iter().copied().collect();
-    let live: BTreeSet<Triple> = sc.live.iter().copied().collect();
+    let chunks: BTreeSet<Cid> = sc.chunks.iter().copied().collect();
+    let live: BTreeSet<Cid> = sc.live.iter().copied().collect();
 
     let mut ids: HashMap<World, u32> = HashMap::new();
     let mut adj: Vec<Vec<u32>> = Vec::new();
@@ -327,7 +332,7 @@ fn has_cycle(adj: &[Vec<u32>]) -> bool {
 /// Convenience map used by tests to express full replication.
 pub fn full_replication(
     peers: &'static [PeerId],
-    chunks: &'static [Triple],
-) -> BTreeMap<PeerId, Vec<Triple>> {
+    chunks: &'static [Cid],
+) -> BTreeMap<PeerId, Vec<Cid>> {
     peers.iter().map(|&p| (p, chunks.to_vec())).collect()
 }

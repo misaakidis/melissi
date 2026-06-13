@@ -12,10 +12,17 @@
 use melissi_machine::Config;
 use melissi_node::{Bin, Effect, Event, Node, Outcome};
 use melissi_settlement::BinId;
+use melissi_types::Triple;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-type Triple = u32;
 type PeerId = u8;
+
+/// Readable chunk number → real triple. The node-level scheduling scenarios
+/// are content-agnostic; bins are assigned explicitly, so chunk numbers are
+/// pure identities.
+fn t(n: u32) -> Triple {
+    Triple::mock(n)
+}
 
 /// A scripted serving peer: per-bin append logs in BinID order.
 struct SimPeer {
@@ -61,12 +68,12 @@ impl Harness {
         }
     }
 
-    fn add_peer(&mut self, id: PeerId, byzantine: bool, holdings: &[(Bin, &[Triple])]) {
+    fn add_peer(&mut self, id: PeerId, byzantine: bool, holdings: &[(Bin, &[u32])]) {
         let mut bins = BTreeMap::new();
         for &(bin, cs) in holdings {
             let mut log = BTreeMap::new();
             for (i, &c) in cs.iter().enumerate() {
-                log.insert((i + 1) as BinId, c);
+                log.insert((i + 1) as BinId, t(c));
             }
             bins.insert(bin, log);
         }
@@ -227,13 +234,13 @@ fn cross_peer_fetch_drains_both_intervals() {
 #[test]
 fn rejected_entry_settles_and_never_pins_the_interval() {
     let mut h = Harness::new(Config::PRODUCTION, 1);
-    h.bad.insert(20);
+    h.bad.insert(t(20));
     h.add_peer(1, false, &[(1, &[10, 20, 30])]);
     h.add_peer(2, false, &[(1, &[10, 20, 30])]);
     h.run_to_quiescence();
 
     assert_eq!(h.node.deficit(), 0, "the rejected entry is settled, not owed");
-    assert!(h.node.has(10) && h.node.has(30) && !h.node.has(20));
+    assert!(h.node.has(t(10)) && h.node.has(t(30)) && !h.node.has(t(20)));
     assert_eq!(h.node.deliveries(), 2);
     assert_eq!(h.node.interval(1, 1), Some(3), "the bad entry must not pin the interval");
     h.assert_invariants();
@@ -258,7 +265,7 @@ fn storm_schedule() {
     // the misfire: chunk 1's only honest holder times out once -> peer 1 is
     // barred for chunk 1; with the omitter also barred, the bars cover every
     // holder -> reset-on-exhaustion -> the retry succeeds.
-    h.spurious.insert((1, 1));
+    h.spurious.insert((1, t(1)));
 
     // drain the HIST backlog under omission + the misfire
     h.run_to_quiescence();
@@ -266,18 +273,18 @@ fn storm_schedule() {
     // churn: peer 3 evicts chunk 3 (its only honest copy at peer 3 — but
     // peer 2 still holds it; supply survives). Make peer 2 the one fetched
     // from by letting the schedule re-route after the lose shows up.
-    h.lose(3, 3);
+    h.lose(3, t(3));
 
     // the LIVE arrival: chunk 4 lands at its holders, deepest priority;
     // held offers for bin 4 answer (the blocking subscription returns).
     for p in [1, 2, 3, 4] {
-        h.arrive(p, 4, 4);
+        h.arrive(p, 4, t(4));
     }
     h.run_to_quiescence();
 
     assert_eq!(h.node.deficit(), 0, "storm must converge");
-    for c in [1, 2, 3, 4] {
-        assert!(h.node.has(c), "chunk {c} missing");
+    for n in [1, 2, 3, 4] {
+        assert!(h.node.has(t(n)), "chunk {n} missing");
     }
     // the floor: 4 chunks, 4 deliveries — through omission, a misfire,
     // churn, and a LIVE arrival.
@@ -301,7 +308,7 @@ fn churned_out_entry_is_forgotten_without_a_bar() {
     // hold back peer 1's fetch (it carries chunk 20's claim), let peer 2's run
     let held_fetch = h.pending.pop_front().expect("peer 1's fetch");
     assert!(matches!(held_fetch, Effect::Fetch { peer: 1, .. }));
-    h.lose(2, 20); // churn: peer 2 evicts 20 while it is claimed at peer 1
+    h.lose(2, t(20)); // churn: peer 2 evicts 20 while it is claimed at peer 1
     h.run_to_quiescence(); // peer 2's fetch (chunk 30) completes
     // the shell's refresh: re-offer the covered-but-unsettled range; peer 2's
     // fresh offer no longer names 20 — the diff fires
@@ -343,7 +350,7 @@ fn peer_gone_releases_claims_and_reroutes() {
     h.run_to_quiescence();
 
     assert_eq!(h.node.deficit(), 0);
-    assert!(h.node.has(10) && h.node.has(20));
+    assert!(h.node.has(t(10)) && h.node.has(t(20)));
     assert_eq!(h.node.deliveries(), 2);
     h.assert_invariants();
 }

@@ -133,18 +133,25 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// Readable chunk number → real triple. The settlement layer is
+    /// id-agnostic (it stores and passes the id, never inspects it), so tests
+    /// think in small numbers and the type stays the real `Triple`.
+    fn t(n: u32) -> Triple {
+        Triple::mock(n)
+    }
+
     /// The MC_settlement scenario: cross-peer overlap in different BinID
     /// positions, one never-storable entry (3), one single-source chunk (4).
     ///   Log[A] = <<1, 2, 3>>   Log[B] = <<2, 1, 4>>   Bad = {3}
     fn scenario() -> (PeerBinLog, PeerBinLog) {
         let mut a = PeerBinLog::new();
-        a.observe(1, 1);
-        a.observe(2, 2);
-        a.observe(3, 3);
+        a.observe(1, t(1));
+        a.observe(2, t(2));
+        a.observe(3, t(3));
         let mut b = PeerBinLog::new();
-        b.observe(1, 2);
-        b.observe(2, 1);
-        b.observe(3, 4);
+        b.observe(1, t(2));
+        b.observe(2, t(1));
+        b.observe(3, t(4));
         (a, b)
     }
 
@@ -162,17 +169,14 @@ mod tests {
 
         for order in orders {
             let (mut a, mut b) = scenario();
-            let mut stored: BTreeSet<u32> = BTreeSet::new();
-            let mut rejected: BTreeSet<u32> = BTreeSet::new();
+            let mut done: BTreeSet<Triple> = BTreeSet::new();
             let (mut last_a, mut last_b) = (a.interval(), b.interval());
 
             for &c in &order {
-                if c == 3 {
-                    rejected.insert(c); // the entry-fault settles globally
-                } else {
-                    stored.insert(c); // fetched from ANYONE (cross-peer)
-                }
-                let settled = |t: u32| stored.contains(&t) || rejected.contains(&t);
+                // c == 3 is the entry-fault (settles by rejection); the rest
+                // are stored (fetched from anyone). Both are "settled".
+                done.insert(t(c));
+                let settled = |x: Triple| done.contains(&x);
                 a.advance(settled);
                 b.advance(settled);
                 // Monotone: the interval never regresses.
@@ -181,11 +185,11 @@ mod tests {
                 last_b = b.interval();
                 // NoDrop, externally visible form: every entry still unsettled
                 // is still in some window (visible — it will be re-offered).
-                for t in [1u32, 2, 4, 3] {
-                    let is_settled = stored.contains(&t) || rejected.contains(&t);
-                    let visible = a.unsettled().any(|(_, x)| x == t)
-                        || b.unsettled().any(|(_, x)| x == t);
-                    assert!(is_settled || visible, "unsettled {t} lost visibility");
+                for n in [1u32, 2, 4, 3] {
+                    let is_settled = done.contains(&t(n));
+                    let visible = a.unsettled().any(|(_, x)| x == t(n))
+                        || b.unsettled().any(|(_, x)| x == t(n));
+                    assert!(is_settled || visible, "unsettled {n} lost visibility");
                 }
             }
             // AdvanceComplete: both windows drain to their topmost.
@@ -202,13 +206,13 @@ mod tests {
     #[test]
     fn noreject_wedges_behind_bad_entry() {
         let (mut a, mut b) = scenario();
-        let stored: BTreeSet<u32> = [1, 2, 4].into();
-        let settled = |t: u32| stored.contains(&t); // rejection does NOT settle
+        let stored: BTreeSet<Triple> = [t(1), t(2), t(4)].into();
+        let settled = |x: Triple| stored.contains(&x); // rejection does NOT settle
         a.advance(&settled);
         b.advance(&settled);
         assert_eq!(a.interval(), 2, "A must wedge just below the bad entry");
         assert_eq!(b.interval(), 3, "B holds no bad entry and drains");
-        assert!(a.unsettled().any(|(_, t)| t == 3), "the bad entry stays visible");
+        assert!(a.unsettled().any(|(_, x)| x == t(3)), "the bad entry stays visible");
     }
 
     /// The cross-peer essence of §4.6: an entry offered by A but fetched via B
@@ -218,8 +222,8 @@ mod tests {
     fn cross_peer_fetch_advances_the_other_log() {
         let (mut a, _b) = scenario();
         // chunk 1 (A's BinID 1) and chunk 2 (A's BinID 2) were fetched from B.
-        let stored: BTreeSet<u32> = [1, 2].into();
-        let up = a.advance(|t| stored.contains(&t));
+        let stored: BTreeSet<Triple> = [t(1), t(2)].into();
+        let up = a.advance(|x| stored.contains(&x));
         assert_eq!(up, Some(2));
         assert_eq!(a.next(), 3);
     }
@@ -228,11 +232,11 @@ mod tests {
     #[test]
     fn gaps_do_not_block_advance() {
         let mut a = PeerBinLog::new();
-        a.observe(1, 10);
-        a.observe(3, 30); // BinID 2 was never offered (evicted before offer)
+        a.observe(1, t(10));
+        a.observe(3, t(30)); // BinID 2 was never offered (evicted before offer)
         a.cover(4); // the offer covered [1, 4]
-        let stored: BTreeSet<u32> = [10].into();
-        assert_eq!(a.advance(|t| stored.contains(&t)), Some(2)); // up to the gap…
+        let stored: BTreeSet<Triple> = [t(10)].into();
+        assert_eq!(a.advance(|x| stored.contains(&x)), Some(2)); // up to the gap…
         a.forget_entry(3); // …then 3 churns out
         assert_eq!(a.advance(|_| false), Some(4)); // nothing offered remains: full cover
     }
@@ -241,7 +245,7 @@ mod tests {
     #[test]
     fn observe_below_interval_is_ignored() {
         let mut a = PeerBinLog::resume(5);
-        a.observe(3, 99);
+        a.observe(3, t(99));
         assert_eq!(a.unsettled().count(), 0);
         assert_eq!(a.next(), 6);
     }

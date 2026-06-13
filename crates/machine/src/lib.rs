@@ -1,13 +1,23 @@
 //! pullstate — the optimal pull-sync scheduling machine.
 //!
 //! A 1:1 refinement of `optimal-testbed/PullSyncerE.tla` (SWIPs repo). The TLA+
-//! module is the spec of record; this file is the refinement. Mapping:
+//! module is the spec of record; this file is the refinement.
+//!
+//! **The machine is polymorphic in the chunk identity `C`.** It needs only an
+//! opaque token it can compare, store, and deduplicate (`Copy + Ord + Hash`)
+//! — it never inspects the bytes. That bound *is* the §6.1 layering principle:
+//! the machine schedules, the codec verifies. So the same code is
+//! model-checked over abstract ids (`u32`, in `explore` + the parity suite)
+//! and run over the real [`melissi_types::Triple`] on the wire — the
+//! refinement is the type instantiation, nothing more.
+//!
+//! Mapping to `PullSyncerE.tla`:
 //!
 //! | `PullSyncerE.tla`            | here                                          |
 //! |------------------------------|-----------------------------------------------|
 //! | `got ⊆ Chunks`               | `got` (owned here; a store-backed view in the node crate) |
-//! | `want ∈ [Chunks→SUBSET Peers]` | `want` — the lease table (a set per triple: `DedupInv` is a checked invariant, not the type, so the `nodedup` ablation stays expressible) |
-//! | `failed`                     | `excluded` — per-triple bars, cleared on exhaustion |
+//! | `want ∈ [Chunks→SUBSET Peers]` | `want` — the lease table (a set per id: `DedupInv` is a checked invariant, not the type, so the `nodedup` ablation stays expressible) |
+//! | `failed`                     | `excluded` — per-id bars, cleared on exhaustion |
 //! | `arrived`                    | `arrived` — offered and unsettled             |
 //! | `holds` (churned by Lose/Gain) | `holders` — observed from offers; `observe_holder`/`lose_holder` |
 //! | `Prio`, `Assign`             | `prio`, `assign` (assign: ablation only)      |
@@ -32,19 +42,20 @@
 pub mod explore;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::Hash;
 
-// The identity seam is single-sourced in `melissi-types`; re-exported so
-// downstream `use melissi_machine::{Triple, PeerId}` keeps resolving.
-pub use melissi_types::{PeerId, Triple};
+// `PeerId` is concrete even in the abstract model (peers are small ids the
+// scheduler only distinguishes); the *chunk* identity is the type parameter.
+pub use melissi_types::PeerId;
 
 /// The design knobs, mirroring the spec's `CONSTANT`s. Production ships
 /// [`Config::PRODUCTION`]; the rest exist so the parity tests can run the same
 /// ablation matrix as `optimal-testbed/run.sh`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Config {
-    pub dedup: bool,            // §5.2  — one in-flight claim per triple
+    pub dedup: bool,            // §5.2  — one in-flight claim per id
     pub failover: bool,         // §5.4  — a stalled claim is releasable
-    pub exclude: bool,          // §5.4  — the staller is barred for that triple
+    pub exclude: bool,          // §5.4  — the staller is barred for that id
     pub reset_on_exhaust: bool, // §5.4  — bars clear once they cover every holder
     pub single_source: bool,    // §5.1  — DISQUALIFIED family; never ship true
     pub priority: bool,         // §5.5  — deepest-first ordering (correctness-neutral)
@@ -63,29 +74,30 @@ impl Config {
     };
 }
 
-/// The scheduling machine. Pure: no I/O, no clock, no locks. One owner.
+/// The scheduling machine, over an opaque chunk identity `C`. Pure: no I/O, no
+/// clock, no locks. One owner.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct PullState {
+pub struct PullState<C> {
     cfg: Config,
-    /// The lease table: in-flight claims, keyed by triple. Empty sets are
-    /// removed (normalised) so equal states compare and hash equal.
-    pub(crate) want: BTreeMap<Triple, BTreeSet<PeerId>>,
-    /// Who currently offers each triple — observed, stale-tolerant.
-    pub(crate) holders: BTreeMap<Triple, BTreeSet<PeerId>>,
-    /// Per-triple bars (the failover log).
-    pub(crate) excluded: BTreeMap<Triple, BTreeSet<PeerId>>,
+    /// The lease table: in-flight claims, keyed by id. Empty sets are removed
+    /// (normalised) so equal states compare and hash equal.
+    pub(crate) want: BTreeMap<C, BTreeSet<PeerId>>,
+    /// Who currently offers each id — observed, stale-tolerant.
+    pub(crate) holders: BTreeMap<C, BTreeSet<PeerId>>,
+    /// Per-id bars (the failover log).
+    pub(crate) excluded: BTreeMap<C, BTreeSet<PeerId>>,
     /// Offered and unsettled (the open window).
-    pub(crate) arrived: BTreeSet<Triple>,
+    pub(crate) arrived: BTreeSet<C>,
     /// Arrived after the cursor (the LIVE gate applies to these).
-    pub(crate) live: BTreeSet<Triple>,
+    pub(crate) live: BTreeSet<C>,
     /// Entry-faults: terminally rejected, settled, never storable.
-    pub(crate) rejected: BTreeSet<Triple>,
+    pub(crate) rejected: BTreeSet<C>,
     /// Fetched and stored (terminal).
-    pub(crate) got: BTreeSet<Triple>,
+    pub(crate) got: BTreeSet<C>,
     /// Priority key (bin depth; higher = deeper = first).
-    pub(crate) prio: BTreeMap<Triple, u8>,
+    pub(crate) prio: BTreeMap<C, u8>,
     /// Single-source ablation only.
-    pub(crate) assign: BTreeMap<Triple, PeerId>,
+    pub(crate) assign: BTreeMap<C, PeerId>,
     /// Tripwire: latched on any double delivery. Must never fire (ConflictFree).
     pub(crate) conflict: bool,
     /// Tripwire: deliveries so far. With `npre`, must equal |got| (DeliveryFloor).
@@ -95,15 +107,15 @@ pub struct PullState {
     pub(crate) npre: u32,
 }
 
-fn set_insert(map: &mut BTreeMap<Triple, BTreeSet<PeerId>>, c: Triple, p: PeerId) -> bool {
+fn set_insert<C: Ord>(map: &mut BTreeMap<C, BTreeSet<PeerId>>, c: C, p: PeerId) -> bool {
     map.entry(c).or_default().insert(p)
 }
 
-fn set_remove(map: &mut BTreeMap<Triple, BTreeSet<PeerId>>, c: Triple, p: PeerId) -> bool {
-    if let Some(s) = map.get_mut(&c) {
+fn set_remove<C: Ord>(map: &mut BTreeMap<C, BTreeSet<PeerId>>, c: &C, p: PeerId) -> bool {
+    if let Some(s) = map.get_mut(c) {
         let removed = s.remove(&p);
         if s.is_empty() {
-            map.remove(&c);
+            map.remove(c);
         }
         removed
     } else {
@@ -111,11 +123,11 @@ fn set_remove(map: &mut BTreeMap<Triple, BTreeSet<PeerId>>, c: Triple, p: PeerId
     }
 }
 
-fn set_contains(map: &BTreeMap<Triple, BTreeSet<PeerId>>, c: Triple, p: PeerId) -> bool {
-    map.get(&c).is_some_and(|s| s.contains(&p))
+fn set_contains<C: Ord>(map: &BTreeMap<C, BTreeSet<PeerId>>, c: &C, p: PeerId) -> bool {
+    map.get(c).is_some_and(|s| s.contains(&p))
 }
 
-impl PullState {
+impl<C: Copy + Ord + Hash> PullState<C> {
     pub fn new(cfg: Config) -> Self {
         PullState {
             cfg,
@@ -138,7 +150,7 @@ impl PullState {
     /// the first offer, never owed, never fetched. (In the model, pre-held
     /// entries simply never *arrive*; this is the implementation's `got`
     /// backing for them.)
-    pub fn preload(&mut self, c: Triple) -> bool {
+    pub fn preload(&mut self, c: C) -> bool {
         if self.got.insert(c) {
             self.npre += 1;
             true
@@ -147,32 +159,32 @@ impl PullState {
         }
     }
 
-    pub fn set_prio(&mut self, c: Triple, depth: u8) {
+    pub fn set_prio(&mut self, c: C, depth: u8) {
         self.prio.insert(c, depth);
     }
 
-    pub fn set_assign(&mut self, c: Triple, p: PeerId) {
+    pub fn set_assign(&mut self, c: C, p: PeerId) {
         self.assign.insert(c, p);
     }
 
     // --- observation actions (the model's Gain / Lose / NewChunk) ------------
 
-    /// `Gain(c, p)` / offer ingestion: peer `p` offers triple `c`.
-    pub fn observe_holder(&mut self, c: Triple, p: PeerId) -> bool {
+    /// `Gain(c, p)` / offer ingestion: peer `p` offers id `c`.
+    pub fn observe_holder(&mut self, c: C, p: PeerId) -> bool {
         set_insert(&mut self.holders, c, p)
     }
 
     /// `Lose(c, p)`: a re-offer shows `p` no longer holds `c` (eviction,
     /// departure). Releases any claim `p` held on `c` — with NO bar: candidacy
     /// is governed by holdings, bars by behaviour (`NoFalseExclusion`).
-    pub fn lose_holder(&mut self, c: Triple, p: PeerId) -> bool {
-        let held = set_remove(&mut self.holders, c, p);
-        set_remove(&mut self.want, c, p);
+    pub fn lose_holder(&mut self, c: C, p: PeerId) -> bool {
+        let held = set_remove(&mut self.holders, &c, p);
+        set_remove(&mut self.want, &c, p);
         held
     }
 
-    /// A pre-cursor (HIST) triple enters the window.
-    pub fn arrive_hist(&mut self, c: Triple) -> bool {
+    /// A pre-cursor (HIST) id enters the window.
+    pub fn arrive_hist(&mut self, c: C) -> bool {
         if self.got.contains(&c) || self.rejected.contains(&c) {
             return false;
         }
@@ -181,7 +193,7 @@ impl PullState {
 
     /// `NewChunk(c)`: a post-cursor (LIVE) arrival. Arrival is an observation —
     /// `enable_live` gates *claiming* (see `claimable`), never arrival.
-    pub fn arrive_live(&mut self, c: Triple) -> bool {
+    pub fn arrive_live(&mut self, c: C) -> bool {
         if self.got.contains(&c) || self.rejected.contains(&c) || self.arrived.contains(&c) {
             return false;
         }
@@ -193,14 +205,14 @@ impl PullState {
     // --- the guard ------------------------------------------------------------
 
     /// `Addressed(c)` — started (leased) or finished.
-    fn addressed(&self, c: Triple) -> bool {
+    fn addressed(&self, c: C) -> bool {
         self.got.contains(&c) || self.want.contains_key(&c)
     }
 
     /// `PrioOK(c)`, with the flagged deviation: quantified only over chunks
     /// that have ≥1 eligible holder, so an unfetchable chunk cannot
     /// head-of-line block the bins below it.
-    fn prio_ok(&self, c: Triple) -> bool {
+    fn prio_ok(&self, c: C) -> bool {
         if !self.cfg.priority {
             return true;
         }
@@ -212,24 +224,23 @@ impl PullState {
     }
 
     /// `d` has at least one candidate left: a holder that is not barred.
-    fn eligible(&self, d: Triple) -> bool {
+    fn eligible(&self, d: C) -> bool {
         if self.got.contains(&d) {
             return false;
         }
         let Some(hs) = self.holders.get(&d) else {
             return false;
         };
-        hs.iter()
-            .any(|p| !set_contains(&self.excluded, d, *p))
+        hs.iter().any(|p| !set_contains(&self.excluded, &d, *p))
     }
 
     /// `Claimable(c, p)` — every conjunct copied from the spec, not paraphrased.
-    pub fn claimable(&self, c: Triple, p: PeerId) -> bool {
+    pub fn claimable(&self, c: C, p: PeerId) -> bool {
         self.arrived.contains(&c)
-            && set_contains(&self.holders, c, p)
+            && set_contains(&self.holders, &c, p)
             && !self.got.contains(&c)
-            && !set_contains(&self.want, c, p)
-            && !set_contains(&self.excluded, c, p)
+            && !set_contains(&self.want, &c, p)
+            && !set_contains(&self.excluded, &c, p)
             && (!self.cfg.dedup || !self.want.contains_key(&c))
             && (!self.cfg.single_source || self.assign.get(&c) == Some(&p))
             && (!self.live.contains(&c) || self.cfg.enable_live)
@@ -239,7 +250,7 @@ impl PullState {
     // --- the actions ------------------------------------------------------------
 
     /// `Want(c, p)`: the check-and-mark, one indivisible step (`PullSyncerNA`).
-    pub fn want(&mut self, c: Triple, p: PeerId) -> bool {
+    pub fn want(&mut self, c: C, p: PeerId) -> bool {
         if !self.claimable(c, p) {
             return false;
         }
@@ -249,8 +260,8 @@ impl PullState {
 
     /// `Deliver(c, p)`: a verified delivery from `p`. Latches `conflict` on a
     /// double delivery — the `ConflictFree` tripwire, which must never fire.
-    pub fn deliver(&mut self, c: Triple, p: PeerId) -> bool {
-        if !set_contains(&self.want, c, p) {
+    pub fn deliver(&mut self, c: C, p: PeerId) -> bool {
+        if !set_contains(&self.want, &c, p) {
             return false;
         }
         if self.got.contains(&c) {
@@ -258,7 +269,7 @@ impl PullState {
         }
         self.got.insert(c);
         self.ndeliv += 1;
-        set_remove(&mut self.want, c, p);
+        set_remove(&mut self.want, &c, p);
         true
     }
 
@@ -266,11 +277,11 @@ impl PullState {
     /// non-delivery — timeout, error, gone. Peers are never classified.
     /// Gated by `failover` (off ⇒ the claim is stuck: the `MC_nofailover`
     /// ablation); bars the staller iff `exclude`.
-    pub fn stall(&mut self, c: Triple, p: PeerId) -> bool {
-        if !self.cfg.failover || !set_contains(&self.want, c, p) {
+    pub fn stall(&mut self, c: C, p: PeerId) -> bool {
+        if !self.cfg.failover || !set_contains(&self.want, &c, p) {
             return false;
         }
-        set_remove(&mut self.want, c, p);
+        set_remove(&mut self.want, &c, p);
         if self.cfg.exclude {
             set_insert(&mut self.excluded, c, p);
         }
@@ -278,8 +289,8 @@ impl PullState {
     }
 
     /// `Reject(c)`: an entry-fault — invalid stamp, replay — identical at every
-    /// holder, so it settles the triple globally (`IntervalSettlement`'s `Bad`).
-    pub fn reject(&mut self, c: Triple) -> bool {
+    /// holder, so it settles the id globally (`IntervalSettlement`'s `Bad`).
+    pub fn reject(&mut self, c: C) -> bool {
         if self.got.contains(&c) || !self.rejected.insert(c) {
             return false;
         }
@@ -291,9 +302,9 @@ impl PullState {
 
     /// `ResetExcluded(c)`: the bars cover every current holder and nothing is
     /// in flight — clear them (cooldown expiry / fresh retry round). Without
-    /// this, one misattributed stall on a triple's only holder strands it
+    /// this, one misattributed stall on an id's only holder strands it
     /// forever (the `MC_noreset` ablation).
-    pub fn reset_excluded(&mut self, c: Triple) -> bool {
+    pub fn reset_excluded(&mut self, c: C) -> bool {
         if !self.can_reset_excluded(c) {
             return false;
         }
@@ -301,7 +312,7 @@ impl PullState {
         true
     }
 
-    pub fn can_reset_excluded(&self, c: Triple) -> bool {
+    pub fn can_reset_excluded(&self, c: C) -> bool {
         self.cfg.reset_on_exhaust
             && self.arrived.contains(&c)
             && !self.got.contains(&c)
@@ -322,11 +333,11 @@ impl PullState {
         &self.cfg
     }
 
-    pub fn has(&self, c: Triple) -> bool {
+    pub fn has(&self, c: C) -> bool {
         self.got.contains(&c)
     }
 
-    pub fn is_rejected(&self, c: Triple) -> bool {
+    pub fn is_rejected(&self, c: C) -> bool {
         self.rejected.contains(&c)
     }
 
@@ -349,9 +360,9 @@ impl PullState {
         self.want.values().filter(|s| s.contains(&p)).count()
     }
 
-    /// The triples `p` currently has in-flight claims on (for peer departure:
-    /// each becomes a `lose_holder`, releasing the claim with no bar).
-    pub fn claims_of(&self, p: PeerId) -> Vec<Triple> {
+    /// The ids `p` currently has in-flight claims on (for peer departure: each
+    /// becomes a `lose_holder`, releasing the claim with no bar).
+    pub fn claims_of(&self, p: PeerId) -> Vec<C> {
         self.want
             .iter()
             .filter(|(_, ps)| ps.contains(&p))
@@ -359,8 +370,8 @@ impl PullState {
             .collect()
     }
 
-    /// The triples `p` is currently observed to hold.
-    pub fn held_by(&self, p: PeerId) -> Vec<Triple> {
+    /// The ids `p` is currently observed to hold.
+    pub fn held_by(&self, p: PeerId) -> Vec<C> {
         self.holders
             .iter()
             .filter(|(_, ps)| ps.contains(&p))
@@ -370,7 +381,7 @@ impl PullState {
 
     /// All enabled `Want(c, p)` — the model's nondeterminism, for policy
     /// (node crate) or exhaustive exploration (explorer) to resolve.
-    pub fn enabled_wants(&self) -> Vec<(Triple, PeerId)> {
+    pub fn enabled_wants(&self) -> Vec<(C, PeerId)> {
         let mut out = Vec::new();
         for &c in &self.arrived {
             if self.got.contains(&c) {
@@ -399,12 +410,12 @@ impl PullState {
         if (self.ndeliv + self.npre) as usize != self.got.len() {
             return Err("DeliveryFloor");
         }
-        // DedupInv: at most one in-flight claim per triple.
+        // DedupInv: at most one in-flight claim per id.
         if self.cfg.dedup && self.want.values().any(|s| s.len() > 1) {
             return Err("DedupInv");
         }
         // ClaimsLive: every claim is on a current, non-barred holder.
-        for (&c, ps) in &self.want {
+        for (c, ps) in &self.want {
             for &p in ps {
                 if !set_contains(&self.holders, c, p) || set_contains(&self.excluded, c, p) {
                     return Err("ClaimsLive");

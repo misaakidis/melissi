@@ -31,9 +31,13 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const NBINS: u8 = 2;
 pub const RADIUS: Bin = 1;
 
-/// Which bin a triple lives in — its PO depth (deeper = higher).
+/// Which bin a triple lives in — a stand-in for proximity order, derived
+/// deterministically from the address (a low byte stands for the leading-bit
+/// distance the real PO measures). `Triple::mock(n)` carries `n` in the low
+/// address bytes, so this spreads the mock universe across bins as `n % NBINS`
+/// did before identities were real.
 pub fn bin_of(c: Triple) -> Bin {
-    RADIUS + (c % NBINS as u32) as u8
+    RADIUS + (c.address[31] % NBINS)
 }
 
 struct SimNode {
@@ -287,7 +291,7 @@ impl Sim {
         for (i, n) in self.nodes.iter().enumerate() {
             assert_eq!(self.deficit(i), 0, "node {i} deficit");
             for &c in universe {
-                assert!(n.index.contains(&c), "node {i} missing chunk {c}");
+                assert!(n.index.contains(&c), "node {i} missing chunk {c:?}");
             }
         }
         self.assert_invariants();

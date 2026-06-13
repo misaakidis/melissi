@@ -13,17 +13,19 @@
 use melissi_machine::Config;
 use melissi_node::{Bin, Effect, Event, Node, Outcome};
 use melissi_settlement::BinId;
+use melissi_types::Triple;
 use melissi_wire::adapter::*;
+use melissi_wire::codec::MintedCodec;
 use std::collections::{BTreeMap, VecDeque};
 
-type Triple = u32;
 type PeerId = u8;
 
 const NBINS: u8 = 2;
 const RADIUS: Bin = 1;
 
+/// Bin from the (real BMT) address — a stand-in for proximity order.
 fn bin_of(c: Triple) -> Bin {
-    RADIUS + (c % NBINS as u32) as u8
+    RADIUS + (c.address[31] % NBINS)
 }
 
 /// A serving reserve: per-bin append log in BinID order. Implements the
@@ -80,7 +82,9 @@ struct WirePlay {
     nodes: Vec<Node>,
     reserves: Vec<Reserve>,
     byzantine: Vec<bool>,
-    codec: SyntheticCodec,
+    /// One shared batch/owner: every node mints and validates against it
+    /// (content is global and content-addressed; one batch funds the test).
+    codec: MintedCodec,
     effects: VecDeque<(usize, Effect)>,
     jobs: VecDeque<Job>,
     served: Vec<u64>,
@@ -96,11 +100,17 @@ impl WirePlay {
             nodes: (0..k).map(|_| Node::new(Config::PRODUCTION, RADIUS)).collect(),
             reserves: (0..k).map(|_| Reserve::default()).collect(),
             byzantine: (0..k).map(|i| byzantine.contains(&i)).collect(),
-            codec: SyntheticCodec,
+            codec: MintedCodec::new([1u8; 32], 0),
             effects: VecDeque::new(),
             jobs: VecDeque::new(),
             served: vec![0; k],
         }
+    }
+
+    /// Mint a real content-addressed, stamped chunk (distinct payload per `n`)
+    /// into the shared batch; returns its triple.
+    fn mint(&mut self, n: u32) -> Triple {
+        self.codec.mint(&n.to_be_bytes(), n as u64, 0)
     }
 
     fn seed(&mut self, i: usize, c: Triple) {
@@ -295,9 +305,9 @@ fn start_of(_node: &Node, _peer: PeerId, _bin: Bin) -> BinId {
 #[test]
 fn wire_cold_start_converges_at_the_floor() {
     let m: u32 = 12;
-    let universe: Vec<Triple> = (0..m).collect();
     for k in [2usize, 3, 4] {
         let mut w = WirePlay::new(k, &[]);
+        let universe: Vec<Triple> = (0..m).map(|n| w.mint(n)).collect();
         for i in 1..k {
             for &c in &universe {
                 w.seed(i, c);
@@ -306,7 +316,7 @@ fn wire_cold_start_converges_at_the_floor() {
         w.start();
         w.run();
         for &c in &universe {
-            assert!(w.nodes[0].has(c), "k={k}: chunk {c} missing over the wire");
+            assert!(w.nodes[0].has(c), "k={k}: chunk {c:?} missing over the wire");
         }
         assert_eq!(w.nodes[0].deficit(), 0, "k={k}");
         assert_eq!(w.nodes[0].deliveries(), m, "k={k}: exactly-once over the wire");
@@ -320,8 +330,8 @@ fn wire_cold_start_converges_at_the_floor() {
 #[test]
 fn wire_byzantine_omitter_is_failed_over() {
     let m: u32 = 8;
-    let universe: Vec<Triple> = (0..m).collect();
     let mut w = WirePlay::new(3, &[2]); // node 2 omits
+    let universe: Vec<Triple> = (0..m).map(|n| w.mint(n)).collect();
     for i in 1..3 {
         for &c in &universe {
             w.seed(i, c);
@@ -330,7 +340,7 @@ fn wire_byzantine_omitter_is_failed_over() {
     w.start();
     w.run();
     for &c in &universe {
-        assert!(w.nodes[0].has(c), "chunk {c} missing");
+        assert!(w.nodes[0].has(c), "chunk {c:?} missing");
     }
     assert_eq!(w.nodes[0].deliveries(), m);
     assert_eq!(w.served[2], 0, "the omitter served nothing over the wire");

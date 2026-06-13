@@ -24,7 +24,8 @@
 mod discovery;
 use discovery::Discovery;
 
-use melissi_machine::{Config, PeerId, PullState, Triple};
+use melissi_machine::{Config, PeerId, PullState};
+use melissi_types::Triple;
 use melissi_settlement::{BinId, PeerBinLog};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -111,7 +112,7 @@ impl Default for Policy {
 
 /// The node core. Pure; one owner; all mutation through the machine's actions.
 pub struct Node {
-    m: PullState,
+    m: PullState<Triple>,
     policy: Policy,
     radius: Bin,
     peers: BTreeSet<PeerId>,
@@ -141,7 +142,7 @@ impl Node {
     /// the sim uses this to ablate fairness (see `Policy`).
     pub fn with_policy(cfg: Config, radius: Bin, policy: Policy) -> Self {
         Node {
-            m: PullState::new(cfg),
+            m: PullState::<Triple>::new(cfg),
             policy,
             radius,
             peers: BTreeSet::new(),
@@ -269,7 +270,7 @@ impl Node {
                             // the machine guard (p ∈ want[c]) must hold: the
                             // shell reports only what was asked of it
                             let ok = self.m.deliver(c, peer);
-                            debug_assert!(ok, "delivery without a lease: {c} from {peer}");
+                            debug_assert!(ok, "delivery without a lease: {c:?} from {peer}");
                         }
                         Outcome::Rejected => {
                             self.m.reject(c);

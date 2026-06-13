@@ -12,6 +12,3 @@ melissi-node = { path = "../node" }
 melissi-settlement = { path = "../settlement" }
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 k256 = { version = "0.13.4", features = ["ecdsa"] }
-
-[dev-dependencies]
-k256 = { version = "0.13.4", features = ["ecdsa"] }
