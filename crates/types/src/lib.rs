@@ -72,8 +72,12 @@ impl Triple {
 /// opaque small id until proximity routing lands.)
 pub type PeerId = u8;
 
-/// A proximity-order bin. Deeper (higher) = nearer = higher fetch priority
-/// (design §5.5). A node syncs bins `>= radius`.
+/// A pull-sync *protocol* bin — the per-bin index of the Offer/Want exchange.
+/// This is the bee *wire* bin (0..=31, bee's Kademlia table), NOT the spec's
+/// proximity order: the true depth of a chunk is `overlay::proximity` (full
+/// `0..=256`, spec §1.1.4), and `overlay::bee_wire_bin` is the named mapping
+/// from that depth onto this wire index. Deeper (higher) = nearer = higher
+/// fetch priority (design §5.5); a node syncs bins `>= radius`.
 pub type Bin = u8;
 
 /// A per-bin, per-peer monotonic sequence number — a chunk's position in that

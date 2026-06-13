@@ -32,3 +32,17 @@ ablations as `optimal-testbed/run.sh`, row for row, via an exhaustive
 explorer over the shipped machine — state counts are asserted equal to TLC's.
 The composite `storm` row (722k states) is `#[ignore]`d; run it with
 `cargo test -- --ignored`.
+
+## Spec, not bee
+
+melissi implements the *Swarm Formal Specification*, not bee's implementation
+*decisions*. Where the two differ, the spec wins and bee's choice is named and
+confined to an interop boundary — so the showcase says what is fundamental and
+what is one client's contingent choice. The standing example: proximity order
+is the spec's count of shared leading bits over the *whole* address (§1.1.4) —
+`0..=255` for distinct addresses (a `u8`), with the degenerate `PO(x,x) = 256`
+self case saturated to `u8::MAX`; bee's `MaxPO = 31` cap is its Kademlia
+bin-table size (absent from the spec's parameter constants, Appendix C),
+isolated in `overlay::bee_wire_bin` and never in the `proximity` fundamental. Bee-derived values that *are* spec
+(BMT chunk address, postage-stamp digest, overlay derivation) are pinned
+against the spec's own vectors, not bee's say-so.
