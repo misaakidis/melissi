@@ -34,6 +34,8 @@
 pub mod handshake;
 pub mod pb;
 #[cfg(feature = "libp2p")]
+pub mod pullsync;
+#[cfg(feature = "libp2p")]
 pub mod transport;
 
 use melissi_crypto as crypto;

@@ -9,14 +9,23 @@ description = "bzz networking: the handshake identity + exchange (pure), and an 
 default = []
 # The real transport. Opt-in so `net`'s default build (BzzAddress + the sync
 # handshake driver) stays dep-light and async-free — all of libp2p/tokio is
-# confined to this feature, and the verified core never sees it.
-libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures"]
+# confined to this feature, and the verified core never sees it. The feature
+# also pulls `wire` (the pull-sync pollers + `Session`) since the pull-sync
+# shell runs over the same libp2p streams.
+libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures", "dep:melissi-wire", "dep:melissi-node", "dep:melissi-settlement", "dep:melissi-machine"]
 
 [dependencies]
 melissi-types = { path = "../types" }
 melissi-crypto = { path = "../crypto" }
 melissi-overlay = { path = "../overlay" }
 melissi-protobuf = { path = "../protobuf" }
+# Pulled only under the `libp2p` feature: the pull-sync session runs the `wire`
+# pollers over real streams. Default `net` (the offline handshake identity)
+# never sees it.
+melissi-wire = { path = "../wire", optional = true }
+melissi-node = { path = "../node", optional = true }
+melissi-settlement = { path = "../settlement", optional = true }
+melissi-machine = { path = "../machine", optional = true }
 
 # key-type features (ecdsa/secp256k1/ed25519): a real bee peer's libp2p
 # identity is an ECDSA key — noise must decode it to verify the peer id.

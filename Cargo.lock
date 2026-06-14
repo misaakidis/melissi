@@ -1651,9 +1651,13 @@ dependencies = [
  "libp2p",
  "libp2p-stream",
  "melissi-crypto",
+ "melissi-machine",
+ "melissi-node",
  "melissi-overlay",
  "melissi-protobuf",
+ "melissi-settlement",
  "melissi-types",
+ "melissi-wire",
  "tokio",
 ]
 
