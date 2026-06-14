@@ -9,6 +9,7 @@ members = [
     "crates/node",
     "crates/sim",
     "crates/wire",
+    "crates/net",
 ]
 
 [workspace.package]

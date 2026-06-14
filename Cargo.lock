@@ -215,6 +215,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissi-net"
+version = "0.1.0"
+dependencies = [
+ "melissi-crypto",
+ "melissi-overlay",
+ "melissi-types",
+]
+
+[[package]]
 name = "melissi-node"
 version = "0.1.0"
 dependencies = [

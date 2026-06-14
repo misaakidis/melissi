@@ -14,7 +14,8 @@ parity tests re-check the same ablation matrix on the shipped code.
 | crate | refines | status |
 |---|---|---|
 | `crates/types` | the identity seam: the real `Triple` = `(address, batchID, stampHash)`. The whole stack instantiates the machine over this; tests use `Triple::mock(n)` (scheduling is content-agnostic) | ✓ |
-| `crates/overlay` | proximity order + overlay address — the fundamentals that *define* the reserve (proximity ≥ radius) and neighbourhood (design §3, §4). Byte-exact vs bee's `pkg/swarm`/`pkg/crypto` vectors | M3-b ✓ |
+| `crates/crypto` | Swarm's shared crypto primitives, single-sourced: keccak256, the EIP-191 signing hash, secp256k1 sign/recover, ethereum address. Used by `bmt`/`postage`/`overlay`/`net` so none of them re-wraps a hash. Pinned to the canonical Ethereum + keccak vectors | ✓ |
+| `crates/overlay` | proximity order + overlay address — the fundamentals that *define* the reserve (proximity ≥ radius) and neighbourhood (spec §1.1.4, §2.2.1). Spec PO is the full shared-leading-bit count (`0..=255`, self saturates), **not** bee's `MaxPO=31` cap (isolated in `bee_wire_bin`). Byte-exact vs bee's vectors | M3-b ✓ |
 | `crates/machine` | `PullSyncerE.tla` — the scheduling machine, **polymorphic in the chunk identity `C`** (it needs only `Copy + Ord + Hash` — it schedules, it never verifies). Model-checked over abstract `u32` ids (exact TLC state-count parity), run over the real `Triple` | M0 ✓ |
 | `crates/settlement` | `IntervalSettlement.tla` — settle before you forget; the interval is a `u64` high-water, so eager advance and disconnected ranges are unrepresentable | M1 ✓ |
 | `crates/node` | the sans-io core (events → effects) over `PullState<Triple>`; want-by-reference, one open offer per `(peer, bin)`, settlement the only durable transition | M1 ✓ |
@@ -23,7 +24,8 @@ parity tests re-check the same ablation matrix on the shipped code.
 | `crates/wire` (`bmt`) | bee's chunk address — BMT over keccak256 — reproduced **byte-exactly**, verified against bee's `pkg/cac` vectors. melissi and bee agree on addresses | M3-b ✓ |
 | `crates/wire` (`postage`) | bee's postage stamp — secp256k1 recovery over bee's exact digest, eth-prefixed → batch-owner address. The **entry-fault** half of self-verification | M3-b ✓ |
 | `crates/wire` (`codec`) | `MintedCodec`: mints real content-addressed, stamped chunks and validates deliveries — `bmt` mismatch → `Missed` (peer-fault, local), bad stamp → `Rejected` (entry-fault, global), both ok → `Delivered`, all from the bytes alone | M3-b ✓ |
-| `crates/net` | rust-libp2p transport + bzz handshake + discovery; the bin-relativity wiring (a chunk's bin is its proximity to *this* node's overlay, computed by `overlay`, not trusted from the wire); **live bee devnet/mainnet interop**. The one part that needs a running peer to verify — left unbuilt rather than guessed | M3-b network |
+| `crates/net` (`BzzAddress`) | the handshake **identity**: the overlay↔key↔underlay binding, signed and verified (the overlay is a commitment to the key, so it can't be forged). Built on `crypto` + `overlay`. The verifiable part of bzz networking | M3-b ✓ |
+| `crates/net` (transport) | rust-libp2p transport (TCP/noise/yamux), the protobuf handshake *exchange*, discovery, **live bee devnet/mainnet interop**. The part that needs a running peer to verify — deferred, not guessed; it slots onto the identity above and the `wire` pollers | M3-b network |
 
 ## Verification
 
