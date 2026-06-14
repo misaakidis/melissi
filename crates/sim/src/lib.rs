@@ -145,6 +145,22 @@ impl Sim {
         }
     }
 
+    /// Ring topology: each node sees `fanout` peers on each side (2×fanout total).
+    pub fn start_ring(&mut self, fanout: usize) {
+        let k = self.nodes.len();
+        if k == 0 || fanout == 0 {
+            return;
+        }
+        for i in 0..k {
+            for d in 1..=fanout {
+                let left = (i + k - d) % k;
+                let right = (i + d) % k;
+                self.feed(i, Event::PeerSeen(peer_id(left)));
+                self.feed(i, Event::PeerSeen(peer_id(right)));
+            }
+        }
+    }
+
     fn feed(&mut self, i: usize, ev: Event) {
         for eff in self.nodes[i].puller.handle(ev) {
             self.queue.push(Msg::Req { from: i, eff });

@@ -11,6 +11,7 @@ members = [
     "crates/sim",
     "crates/wire",
     "crates/net",
+    "crates/wasm",
 ]
 
 [workspace.package]
