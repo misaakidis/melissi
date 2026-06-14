@@ -8,6 +8,7 @@ description = "the bee wire: pullsync protobuf + delimited framing + the bee-wir
 [dependencies]
 melissi-types = { path = "../types" }
 melissi-crypto = { path = "../crypto" }
+melissi-protobuf = { path = "../protobuf" }
 melissi-machine = { path = "../machine" }
 melissi-node = { path = "../node" }
 melissi-settlement = { path = "../settlement" }

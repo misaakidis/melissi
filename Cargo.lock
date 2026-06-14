@@ -1640,6 +1640,7 @@ dependencies = [
  "libp2p-stream",
  "melissi-crypto",
  "melissi-overlay",
+ "melissi-protobuf",
  "melissi-types",
  "tokio",
 ]
@@ -1660,6 +1661,10 @@ dependencies = [
  "melissi-crypto",
  "melissi-types",
 ]
+
+[[package]]
+name = "melissi-protobuf"
+version = "0.1.0"
 
 [[package]]
 name = "melissi-settlement"
@@ -1689,6 +1694,7 @@ dependencies = [
  "melissi-crypto",
  "melissi-machine",
  "melissi-node",
+ "melissi-protobuf",
  "melissi-settlement",
  "melissi-types",
 ]

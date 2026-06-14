@@ -1,113 +1,13 @@
-//! bee's `pkg/pullsync/pb/pullsync.proto` (verified against bee MASTER) and
-//! its stream framing (`pkg/p2p/protobuf`: gogo delimited = uvarint length
-//! prefix, 128 KiB cap). Hand-rolled proto3 — the five message shapes are
-//! tiny, and zero dependencies keeps the wire crate as auditable as the rest.
+//! bee's `pkg/pullsync/pb/pullsync.proto` (verified against bee MASTER): the
+//! five pull-sync message shapes. The proto3 wire plumbing — varint, gogo
+//! delimited framing, field codec — is the shared [`melissi_protobuf`] (bee
+//! speaks the same proto3 on every protocol; one audited copy serves all).
 //!
-//! Encoding facts pinned from bee master:
-//!   - proto3: zero-valued scalar fields and empty bytes are omitted;
-//!   - `Ack.Cursors` (repeated uint64) is PACKED on the wire (gogo proto3
-//!     default); the decoder accepts packed and unpacked;
-//!   - unknown fields are skipped by wire type (forward compatibility).
+//! Pull-sync-specific encoding fact: `Ack.Cursors` (repeated uint64) is PACKED
+//! on the wire (gogo proto3 default); the decoder accepts packed and unpacked.
 
-pub const MAX_FRAME: usize = 128 * 1024;
-
-// --- varint -------------------------------------------------------------------
-
-pub fn put_uvarint(buf: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        buf.push((v as u8 & 0x7f) | 0x80);
-        v >>= 7;
-    }
-    buf.push(v as u8);
-}
-
-pub fn get_uvarint(b: &[u8]) -> Option<(u64, usize)> {
-    let mut v: u64 = 0;
-    for (i, &byte) in b.iter().enumerate().take(10) {
-        v |= u64::from(byte & 0x7f) << (7 * i);
-        if byte & 0x80 == 0 {
-            return Some((v, i + 1));
-        }
-    }
-    None
-}
-
-// --- delimited framing ----------------------------------------------------------
-
-/// One message → one frame: uvarint(len) ++ bytes.
-pub fn frame(msg: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(msg.len() + 4);
-    put_uvarint(&mut out, msg.len() as u64);
-    out.extend_from_slice(msg);
-    out
-}
-
-/// Extract one message from the front of `buf`. `None` = need more bytes.
-pub fn deframe(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
-    let (len, n) = get_uvarint(buf)?;
-    assert!(len as usize <= MAX_FRAME, "frame exceeds the 128 KiB cap");
-    let end = n + len as usize;
-    if buf.len() < end {
-        return None;
-    }
-    Some((buf[n..end].to_vec(), end))
-}
-
-// --- field plumbing ---------------------------------------------------------------
-
-fn put_varint_field(buf: &mut Vec<u8>, field: u32, v: u64) {
-    if v != 0 {
-        put_uvarint(buf, u64::from(field << 3)); // wire type 0
-        put_uvarint(buf, v);
-    }
-}
-
-fn put_bytes_field(buf: &mut Vec<u8>, field: u32, b: &[u8]) {
-    if !b.is_empty() {
-        put_uvarint(buf, u64::from(field << 3 | 2));
-        put_uvarint(buf, b.len() as u64);
-        buf.extend_from_slice(b);
-    }
-}
-
-/// Iterate (field, wire-type, payload) over a message, skipping unknowns.
-fn fields(mut b: &[u8], mut f: impl FnMut(u32, u8, &[u8])) -> Option<()> {
-    while !b.is_empty() {
-        let (tag, n) = get_uvarint(b)?;
-        b = &b[n..];
-        let (field, wt) = ((tag >> 3) as u32, (tag & 7) as u8);
-        match wt {
-            0 => {
-                let (_, n) = get_uvarint(b)?;
-                f(field, wt, &b[..n]);
-                b = &b[n..];
-            }
-            2 => {
-                let (len, n) = get_uvarint(b)?;
-                let end = n + len as usize;
-                if b.len() < end {
-                    return None;
-                }
-                f(field, wt, &b[n..end]);
-                b = &b[end..];
-            }
-            5 => {
-                f(field, wt, b.get(..4)?);
-                b = &b[4..];
-            }
-            1 => {
-                f(field, wt, b.get(..8)?);
-                b = &b[8..];
-            }
-            _ => return None,
-        }
-    }
-    Some(())
-}
-
-fn varint_of(payload: &[u8]) -> u64 {
-    get_uvarint(payload).map(|(v, _)| v).unwrap_or(0)
-}
+pub use melissi_protobuf::{deframe, frame, get_uvarint, put_uvarint, MAX_FRAME};
+use melissi_protobuf::{fields, put_bytes_field, put_varint_field, varint_of};
 
 // --- the messages ---------------------------------------------------------------
 
