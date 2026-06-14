@@ -20,7 +20,7 @@
 
 use crate::adapter::TripleCodec;
 use crate::{bmt, pb, postage};
-use k256::ecdsa::{signature::hazmat::PrehashSigner, RecoveryId, Signature, SigningKey};
+use melissi_crypto as crypto;
 use melissi_node::Outcome;
 use melissi_types::Triple;
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 /// owner key — enough to mint valid entries and to validate deliveries the
 /// way a node does.
 pub struct MintedCodec {
-    key: SigningKey,
+    secret: [u8; 32],
     owner: [u8; 20],
     batch_id: [u8; 32],
     /// triple → (payload, stamp): the minted reserve this codec can serve.
@@ -45,10 +45,9 @@ fn to_arr(v: &[u8]) -> [u8; 32] {
 impl MintedCodec {
     /// A codec keyed by a 32-byte owner secret and a batch id seed.
     pub fn new(owner_secret: [u8; 32], batch_seed: u8) -> Self {
-        let key = SigningKey::from_bytes(&owner_secret.into()).expect("valid secret");
-        let owner = postage::eth_address(key.verifying_key().to_encoded_point(false).as_bytes());
+        let owner = crypto::public_eth_address(&owner_secret).expect("valid secret");
         MintedCodec {
-            key,
+            secret: owner_secret,
             owner,
             batch_id: [batch_seed; 32],
             store: BTreeMap::new(),
@@ -62,14 +61,12 @@ impl MintedCodec {
         let idx = index.to_be_bytes();
         let ts = timestamp.to_be_bytes();
         let digest = postage::to_sign_digest(&address, &self.batch_id, &idx, &ts);
-        let prehash = postage::eth_prefixed(&digest);
-        let (sig, recid): (Signature, RecoveryId) = self.key.sign_prehash(&prehash).unwrap();
+        let sig = crypto::sign(&self.secret, &crypto::eth_prefixed(&digest)).unwrap();
         let mut stamp = Vec::with_capacity(postage::STAMP_SIZE);
         stamp.extend_from_slice(&self.batch_id);
         stamp.extend_from_slice(&idx);
         stamp.extend_from_slice(&ts);
-        stamp.extend_from_slice(&sig.to_bytes());
-        stamp.push(recid.to_byte());
+        stamp.extend_from_slice(&sig);
 
         let stamp_hash = bmt::keccak(&stamp);
         let triple = Triple::new(address, self.batch_id, stamp_hash);

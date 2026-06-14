@@ -11,8 +11,8 @@
 //! as what it is: an interop detail of the wire's bin index, named and
 //! confined to [`bee_wire_bin`], never the fundamental.
 
+use melissi_crypto::keccak256;
 use melissi_types::Address;
-use tiny_keccak::{Hasher, Keccak};
 
 /// Proximity order (spec Def 6, §1.1.4): the number of common leading bits of
 /// the addresses' big-endian (MSB-first) representations. Higher = nearer.
@@ -63,11 +63,7 @@ pub fn overlay_address(eth_addr: &[u8; 20], network_id: u64, nonce: &[u8; 32]) -
     data.extend_from_slice(eth_addr);
     data.extend_from_slice(&network_id.to_le_bytes());
     data.extend_from_slice(nonce);
-    let mut k = Keccak::v256();
-    k.update(&data);
-    let mut out = [0u8; 32];
-    k.finalize(&mut out);
-    out
+    keccak256(&data)
 }
 
 /// A node's neighbourhood: its overlay address and storage radius. Together

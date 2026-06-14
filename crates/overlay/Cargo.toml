@@ -7,4 +7,4 @@ description = "proximity order and overlay address — the fundamentals that def
 
 [dependencies]
 melissi-types = { path = "../types" }
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+melissi-crypto = { path = "../crypto" }

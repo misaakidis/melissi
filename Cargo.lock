@@ -200,6 +200,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "melissi-crypto"
+version = "0.1.0"
+dependencies = [
+ "k256",
+ "tiny-keccak",
+]
+
+[[package]]
 name = "melissi-machine"
 version = "0.1.0"
 dependencies = [
@@ -219,8 +227,8 @@ dependencies = [
 name = "melissi-overlay"
 version = "0.1.0"
 dependencies = [
+ "melissi-crypto",
  "melissi-types",
- "tiny-keccak",
 ]
 
 [[package]]
@@ -248,12 +256,11 @@ version = "0.1.0"
 name = "melissi-wire"
 version = "0.1.0"
 dependencies = [
- "k256",
+ "melissi-crypto",
  "melissi-machine",
  "melissi-node",
  "melissi-settlement",
  "melissi-types",
- "tiny-keccak",
 ]
 
 [[package]]

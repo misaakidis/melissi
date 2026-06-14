@@ -11,33 +11,32 @@
 //!   3. chunk address = keccak256(span ‖ bmt_root), span = u64 LE of the
 //!      payload length (8 bytes).
 
-use tiny_keccak::{Hasher, Keccak};
+pub use melissi_crypto::keccak256 as keccak;
+use melissi_crypto::keccak256;
 
 pub const SPAN_SIZE: usize = 8;
 pub const SECTION: usize = 32;
 pub const CHUNK_SIZE: usize = 4096; // 128 sections
 
-fn keccak256(parts: &[&[u8]]) -> [u8; 32] {
-    let mut k = Keccak::v256();
-    for p in parts {
-        k.update(p);
-    }
-    let mut out = [0u8; 32];
-    k.finalize(&mut out);
-    out
+/// keccak256 of two concatenated 32-byte hashes (a BMT internal node).
+fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut pair = [0u8; 2 * SECTION];
+    pair[..SECTION].copy_from_slice(left);
+    pair[SECTION..].copy_from_slice(right);
+    keccak256(&pair)
 }
 
 /// The BMT root of `data` (already padded to a power-of-two multiple of 32).
-/// `len` is the slice length; recursion mirrors bee's `RefHasher.hash`.
+/// Recursion mirrors bee's `RefHasher.hash`.
 fn bmt_root(data: &[u8]) -> [u8; 32] {
     debug_assert!(data.len() >= 2 * SECTION && data.len().is_power_of_two());
     if data.len() == 2 * SECTION {
-        return keccak256(&[data]); // a section: two adjacent 32-byte segments
+        return keccak256(data); // a section: two adjacent 32-byte segments
     }
     let half = data.len() / 2;
     let left = bmt_root(&data[..half]);
     let right = bmt_root(&data[half..]);
-    keccak256(&[&left, &right])
+    hash_pair(&left, &right)
 }
 
 /// bee's content-addressed chunk address for a ≤ 4096-byte payload.
@@ -49,15 +48,10 @@ pub fn chunk_address(payload: &[u8]) -> [u8; 32] {
     let mut padded = [0u8; CHUNK_SIZE];
     padded[..payload.len()].copy_from_slice(payload);
     let root = bmt_root(&padded);
-    let mut span = [0u8; SPAN_SIZE];
-    span.copy_from_slice(&(payload.len() as u64).to_le_bytes());
-    keccak256(&[&span, &root])
-}
-
-/// keccak256 of arbitrary bytes — for stamp hashing and SOC ids (bee uses
-/// keccak256 throughout, not the BMT, for those).
-pub fn keccak(data: &[u8]) -> [u8; 32] {
-    keccak256(&[data])
+    let mut buf = [0u8; SPAN_SIZE + SECTION];
+    buf[..SPAN_SIZE].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+    buf[SPAN_SIZE..].copy_from_slice(&root);
+    keccak256(&buf) // chunk address = keccak256(span ‖ bmt_root)
 }
 
 #[cfg(test)]
