@@ -167,6 +167,38 @@ fn small_gap_resync_fetches_only_the_gap() {
     }
 }
 
+/// The bounded working set: after a cold start converges, the scheduling
+/// state is pruned back to ~0 even though the node still HOLDS every chunk.
+/// Memory tracks the open offer window, not all history — the property the
+/// design specifies and the network layer will stress.
+#[test]
+fn working_set_returns_to_zero_after_convergence() {
+    let k = 4usize;
+    let mut sim = Sim::new(k, &[], 3);
+    for i in 1..k {
+        for c in universe() {
+            sim.seed(i, c);
+        }
+    }
+    sim.start();
+    sim.run();
+    sim.assert_converged(&universe());
+    // the empty node fetched and still holds all M chunks ...
+    for c in universe() {
+        assert!(sim.node_has(0, c));
+    }
+    // ... but its scheduling working set has drained: settled ids pruned.
+    assert_eq!(
+        sim.working_set(0),
+        0,
+        "working set must prune to 0 after convergence"
+    );
+    // the full servers never tracked scheduling state for their own holdings.
+    for i in 1..k {
+        assert_eq!(sim.working_set(i), 0, "server {i} working set");
+    }
+}
+
 // --- fairness ablations: the O5 floor is floor-achieving, not gate-critical,
 //     so removing a policy keeps CORRECTNESS (still converges, each chunk
 //     once) but breaks the BALANCE. These are the negatives that make the

@@ -206,7 +206,7 @@ impl Node {
                 self.cursors.retain(|&(q, _), _| q != p);
                 self.disc.forget_peer(p);
                 // released claims may be re-routable right away
-                self.round(None)
+                self.round()
             }
 
             Event::CursorsResult { peer, cursors } => {
@@ -280,7 +280,7 @@ impl Node {
                         self.m.arrive_hist(c);
                     }
                 }
-                self.round(Some((peer, bin)))
+                self.round()
             }
 
             Event::Tick => {
@@ -297,7 +297,7 @@ impl Node {
 
             Event::FetchResult {
                 peer,
-                bin,
+                bin: _, // outcomes carry their own ids; the round re-derives work
                 outcomes,
             } => {
                 for (c, outcome) in outcomes {
@@ -316,13 +316,13 @@ impl Node {
                         }
                     }
                 }
-                self.round(Some((peer, bin)))
+                self.round()
             }
         }
     }
 
     /// One settle-reset-schedule pass: the body every event arm ends in.
-    fn round(&mut self, _touched: Option<(PeerId, Bin)>) -> Vec<Effect> {
+    fn round(&mut self) -> Vec<Effect> {
         let mut fx = Vec::new();
 
         // 1. Settle: settle before you forget — got or terminally rejected.
@@ -356,14 +356,37 @@ impl Node {
             }
         }
 
-        // 2. Reset: bars covering every current holder clear (cooldown) —
+        // 2. Prune the working set to the open window. A settled id (got or
+        //    rejected) that has left every offer window is done — GC it from
+        //    the scheduling maps, so memory tracks the window, not all history
+        //    ever seen. The reserve itself (got/rejected) is retained — that is
+        //    the stored data (a store-backed view in a deployed node), and it
+        //    is what stops a re-offer re-fetching. (Also shrinks the maps the
+        //    reset and schedule passes below iterate.)
+        let windowed: BTreeSet<Triple> = self
+            .logs
+            .values()
+            .flat_map(|l| l.unsettled().map(|(_, c)| c))
+            .collect();
+        let done: Vec<Triple> = self
+            .bin_of
+            .keys()
+            .copied()
+            .filter(|&c| (self.m.has(c) || self.m.is_rejected(c)) && !windowed.contains(&c))
+            .collect();
+        for c in done {
+            self.m.forget(c);
+            self.bin_of.remove(&c);
+        }
+
+        // 3. Reset: bars covering every current holder clear (cooldown) —
         //    a misattributed stall costs a round, never the chunk.
         let candidates: Vec<Triple> = self.bin_of.keys().copied().collect();
         for c in candidates {
             self.m.reset_excluded(c);
         }
 
-        // 3. Schedule: resolve the machine's nondeterminism by policy —
+        // 4. Schedule: resolve the machine's nondeterminism by policy —
         //    deepest bin first (the prio guard), least-loaded holder, peer id
         //    as the deterministic tiebreak. Policy only picks among ENABLED
         //    wants, so it can break nothing (provably-neutral).
@@ -426,6 +449,15 @@ impl Node {
     }
 
     // --- observability ---------------------------------------------------------
+
+    /// The size of the scheduling working set — ids currently tracked for
+    /// fetching. The bounded-working-set property: this tracks the open offer
+    /// window, not all history, so after convergence it returns to ~0 as
+    /// settled ids are pruned (the reserve `got` is retained, but it is not
+    /// scheduling state — store-backed in a deployed node).
+    pub fn working_set(&self) -> usize {
+        self.bin_of.len()
+    }
 
     /// `Phi`: chunks offered-and-unsettled, not yet stored.
     pub fn deficit(&self) -> usize {

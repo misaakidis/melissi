@@ -327,6 +327,27 @@ impl<C: Copy + Ord + Hash> PullState<C> {
             })
     }
 
+    /// Garbage-collect a *settled* id (`got` or `rejected`) out of the
+    /// scheduling maps once it has left every offer window — the implementation
+    /// of the design's bounded working set. Not a model action: it is
+    /// behaviour-neutral, because a settled id is already unclaimable
+    /// (`claimable` requires `c ∉ got`) and `addressed`, so dropping it from
+    /// `arrived`/`live`/`holders`/`excluded`/`prio` changes no guard outcome
+    /// for any other id. The terminal record (`got` / `rejected`) is kept — it
+    /// is the reserve (a store-backed view in a deployed node), and it is what
+    /// keeps a re-offer from re-fetching. No-op unless `c` is settled.
+    pub fn forget(&mut self, c: C) -> bool {
+        if !self.got.contains(&c) && !self.rejected.contains(&c) {
+            return false; // only settled ids are GC-able
+        }
+        self.arrived.remove(&c);
+        self.live.remove(&c);
+        self.holders.remove(&c);
+        self.excluded.remove(&c);
+        self.prio.remove(&c);
+        true
+    }
+
     // --- queries ------------------------------------------------------------
 
     pub fn cfg(&self) -> &Config {

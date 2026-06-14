@@ -302,6 +302,11 @@ impl Sim {
         self.nodes[i].puller.deficit()
     }
 
+    /// The node's scheduling working-set size — bounded to the open window.
+    pub fn working_set(&self, i: usize) -> usize {
+        self.nodes[i].puller.working_set()
+    }
+
     pub fn assert_invariants(&self) {
         for (i, n) in self.nodes.iter().enumerate() {
             assert!(!n.puller.conflict(), "node {i}: ConflictFree tripped");
