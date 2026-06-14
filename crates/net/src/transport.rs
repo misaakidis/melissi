@@ -9,32 +9,47 @@
 //! driver over *any* `AsyncRead + AsyncWrite` stream, so libp2p, an in-memory
 //! duplex, or a simulated network are interchangeable underneath it.
 //!
-//! Scope: melissi↔melissi over real TCP is what's verified here (the
-//! `two_nodes_handshake_over_tcp` test). Interop with a live *bee* node also
-//! needs bee's exact protocol id and the protobuf Syn/Ack exchange — the
-//! deferred, live-peer step.
+//! Scope: the protocol is bee's — the real stream id [`HANDSHAKE_PROTOCOL`] and
+//! the byte-exact protobuf Syn/SynAck/Ack exchange ([`crate::pb`]). Two libp2p
+//! nodes complete it over real TCP (`two_nodes_handshake_over_tcp`), each
+//! recovering the other's verified identity. What still needs a *live bee* peer
+//! to exercise: the observed-underlay re-signing (NAT/address discovery, which
+//! melissi skips — it advertises its configured underlay), peer discovery, and
+//! running the `wire` pull-sync session over the established connection.
 
-use crate::handshake::{Handshake, HsOut};
+use crate::handshake::{Handshake, HsOut, Role};
 use crate::BzzAddress;
 use futures::{AsyncReadExt, AsyncWriteExt};
 use libp2p::StreamProtocol;
 
-/// The melissi handshake stream protocol. (bee's is `/swarm/handshake/13.0.0/
-/// handshake`; matching it is part of the deferred bee-interop step.)
-pub const HANDSHAKE_PROTOCOL: StreamProtocol = StreamProtocol::new("/melissi/handshake/1.0.0");
+/// bee's handshake stream protocol id (`pkg/p2p.NewSwarmStreamName` =
+/// `/swarm/{name}/{version}/{stream}`). Matching it byte-for-byte is what lets
+/// melissi open the handshake stream on a live bee node.
+pub const HANDSHAKE_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/swarm/handshake/15.0.0/handshake");
 
-/// Drive the sync handshake state machine over an async byte stream. Returns
+/// Drive the sync handshake state machine over an async byte stream. The dialer
+/// plays [`Role::Initiator`], the accepting side [`Role::Responder`]. Returns
 /// the peer's verified ethereum address, or `None` on failure / bad peer.
 /// Transport-agnostic: works over any `AsyncRead + AsyncWrite`.
 pub async fn run_handshake<S>(
     stream: &mut S,
-    addr: &BzzAddress,
+    role: Role,
+    mine: &BzzAddress,
     network_id: u64,
+    full_node: bool,
+    observed_peer_underlay: Vec<u8>,
 ) -> Option<[u8; 20]>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
-    let mut hs = Handshake::new(addr, network_id);
+    let mut hs = Handshake::new(
+        role,
+        mine.clone(),
+        network_id,
+        full_node,
+        observed_peer_underlay,
+    );
     let mut chunk = [0u8; 2048];
     let mut input: Vec<u8> = Vec::new();
     loop {
@@ -42,7 +57,10 @@ where
             HsOut::Send(bytes) => {
                 input.clear();
                 stream.write_all(&bytes).await.ok()?;
-                stream.flush().await.ok()?;
+                // Best-effort: the bytes are handed off. A flush error here is
+                // the benign shutdown race — a peer that has read our final Ack
+                // and closed its stream — not a handshake failure.
+                let _ = stream.flush().await;
             }
             HsOut::Need => {
                 input.clear();
@@ -68,6 +86,10 @@ mod tests {
     use std::time::Duration;
 
     const NET: u64 = 1;
+    // A non-empty underlay (the peer's multiaddr) — `/ip4/127.0.0.1/tcp/1634`
+    // in multiaddr binary. Real handshakes always carry one; an empty observed
+    // underlay would omit the `Syn` field and be rejected, as bee rejects it.
+    const OBSERVED: &[u8] = &[0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62];
 
     fn node() -> Swarm<libp2p_stream::Behaviour> {
         libp2p::SwarmBuilder::with_new_identity()
@@ -77,6 +99,8 @@ mod tests {
                 libp2p::noise::Config::new,
                 libp2p::yamux::Config::default,
             )
+            .unwrap()
+            .with_dns()
             .unwrap()
             .with_behaviour(|_| libp2p_stream::Behaviour::new())
             .unwrap()
@@ -126,7 +150,16 @@ mod tests {
         });
         let a_done = tokio::spawn(async move {
             let (_peer, mut s) = a_incoming.next().await.expect("incoming stream");
-            run_handshake(&mut s, &bzz(&sa, 1), NET).await
+            // A accepts → responder.
+            run_handshake(
+                &mut s,
+                Role::Responder,
+                &bzz(&sa, 1),
+                NET,
+                true,
+                OBSERVED.to_vec(),
+            )
+            .await
         });
 
         // node B: dial A, open the handshake stream, run the driver (client).
@@ -145,7 +178,16 @@ mod tests {
                     Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
                 }
             };
-            run_handshake(&mut s, &bzz(&sb, 2), NET).await
+            // B dials → initiator.
+            run_handshake(
+                &mut s,
+                Role::Initiator,
+                &bzz(&sb, 2),
+                NET,
+                true,
+                OBSERVED.to_vec(),
+            )
+            .await
         });
 
         let timeout = Duration::from_secs(15);
@@ -161,5 +203,94 @@ mod tests {
         // A recovered B's address; B recovered A's. Mutual, over real TCP.
         assert_eq!(a_peer_eth, Some(eth_b));
         assert_eq!(b_peer_eth, Some(eth_a));
+    }
+
+    /// Live interop: dial a real Swarm **testnet** bee node, run bee's handshake
+    /// as initiator, and recover its verified identity. Network + external peer,
+    /// so `#[ignore]`d (never in CI). Run explicitly:
+    ///
+    /// ```text
+    /// cargo test -p melissi-net --features libp2p live_testnet_handshake -- --ignored --nocapture
+    /// ```
+    ///
+    /// The bootnode resolves from `/dnsaddr/testnet.ethswarm.org`; this pins one
+    /// peer it currently expands to. Testnet networkID is 10
+    /// (`go-storage-incentives-abi`). bee sends its SynAck (identity) before
+    /// reading our Ack, so we verify it even if bee's picker later declines us.
+    #[tokio::test]
+    #[ignore]
+    async fn live_testnet_handshake() {
+        const TESTNET: u64 = 10;
+        // bee-0.testnet.ethswarm.org (from _dnsaddr TXT); peer id in the addr.
+        let peer_addr =
+            "/ip4/49.12.172.37/tcp/32490/p2p/QmZsYCbkUXWpfR34PmUwMJvHwJtGfbcMMoAp1G2EydkpRA";
+        let addr: Multiaddr = peer_addr.parse().unwrap();
+        let peer: libp2p::PeerId = match addr.iter().find_map(|p| match p {
+            libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+            _ => None,
+        }) {
+            Some(id) => id,
+            None => panic!("no /p2p/ in addr"),
+        };
+        let observed = addr.to_vec(); // the multiaddr we dialed (valid for bee's Syn)
+
+        // our identity: a fresh key, a syntactically valid underlay multiaddr
+        // (bee only needs it to deserialize), testnet network id.
+        let secret = [0x5au8; 32];
+        let our_underlay = "/ip4/127.0.0.1/tcp/1634"
+            .parse::<Multiaddr>()
+            .unwrap()
+            .to_vec();
+        let mine = BzzAddress::new(
+            &secret,
+            &our_underlay,
+            TESTNET,
+            [0x11; 32],
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+
+        let mut sw = node();
+        let mut ctrl = sw.behaviour().new_control();
+        sw.dial(addr).unwrap();
+        tokio::spawn(async move {
+            loop {
+                match sw.select_next_some().await {
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        eprintln!("connected to {peer_id}")
+                    }
+                    SwarmEvent::OutgoingConnectionError { error, .. } => {
+                        eprintln!("dial error: {error:?}")
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(30), async move {
+            let mut s = loop {
+                match ctrl.open_stream(peer, HANDSHAKE_PROTOCOL).await {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        eprintln!("open_stream pending/err ({e:?}); retrying");
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            };
+            run_handshake(&mut s, Role::Initiator, &mine, TESTNET, false, observed).await
+        })
+        .await;
+
+        match result {
+            Ok(Some(eth)) => {
+                let hex: String = eth.iter().map(|b| format!("{b:02x}")).collect();
+                eprintln!("✓ testnet bee verified — blockchain address 0x{hex}");
+            }
+            Ok(None) => {
+                panic!("handshake ran but verification failed (version/protocol mismatch?)")
+            }
+            Err(_) => panic!("timed out connecting / opening the handshake stream"),
+        }
     }
 }

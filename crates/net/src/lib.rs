@@ -15,19 +15,24 @@
 //! forged: it is a commitment to the key.
 //!
 //! **What is here vs deferred.** The cryptographic binding above is pure and
-//! verified offline. On top of it sits the handshake *exchange* ([`handshake`])
-//! — a sync `poll`-driver, like the `wire` pollers, that swaps signed
-//! addresses and verifies the peer's; and the real libp2p [`transport`] (behind
-//! the `libp2p` feature, TCP / noise / yamux), which drives that *same* sync
-//! driver over a socket. Two melissi nodes complete the handshake over real
-//! TCP, each recovering the other's verified identity — that is what the
-//! `libp2p` feature's tests check. Still deferred, because they need a live bee
-//! peer: bee's exact protocol id and protobuf Syn/Ack/Synack (byte-exact
-//! interop), peer discovery, running the `wire` pull-sync session over the
-//! established connection, and devnet/mainnet interop. Nothing here is faked:
-//! the identity is real and checked, and the socket carries melissi↔melissi.
+//! verified offline. On top of it sits bee's handshake *exchange* — the
+//! [`pb`] protobuf messages (`Syn`/`SynAck`/`Ack`, byte-exact against vectors
+//! bee itself marshalled) driven by the asymmetric [`handshake`] state machine
+//! (a sync `poll`-driver, like the `wire` pollers); and the real libp2p
+//! [`transport`] (behind the `libp2p` feature, TCP / noise / yamux) that runs
+//! that *same* driver over a socket on bee's stream id
+//! `/swarm/handshake/15.0.0/handshake`. Two nodes complete the exchange over
+//! real TCP, each recovering the other's verified identity.
+//!
+//! Still deferred, because it needs a live *bee* peer to exercise: the
+//! observed-underlay re-signing (NAT/address discovery — melissi advertises its
+//! configured underlay and skips it), peer discovery, running the `wire`
+//! pull-sync session over the established connection, and devnet/mainnet
+//! interop. Nothing here is faked: identity, protobuf, and protocol id are all
+//! bee-exact and checked; only a connection to a running bee remains.
 
 pub mod handshake;
+pub mod pb;
 #[cfg(feature = "libp2p")]
 pub mod transport;
 
@@ -106,39 +111,43 @@ impl BzzAddress {
         })
     }
 
-    /// Serialise for the wire (a self-contained fixed layout):
-    /// `underlay_len(4 BE) ‖ underlay ‖ overlay(32) ‖ sig(65) ‖ nonce(32) ‖
-    /// timestamp(8 BE) ‖ chequebook(20)`. NB this is melissi-internal framing;
-    /// bee's handshake carries the `pb.BzzAddress` protobuf, so byte-exact
-    /// interop is the (deferred) protobuf step — this suffices for melissi↔
-    /// melissi over any transport.
+    /// Encode as bee's `pb.BzzAddress` protobuf — the interop wire form. Fields
+    /// in proto order: `1 Underlay, 2 Signature, 3 Overlay, 4 Nonce,
+    /// 5 Timestamp (int64), 6 ChequebookAddress`. The chequebook is always 20
+    /// bytes (emitted even when zero, as proto3 emits a non-empty fixed `bytes`
+    /// field); byte-for-byte equal to what bee's gogo marshaller produces.
     pub fn encode(&self) -> Vec<u8> {
-        let mut b = Vec::with_capacity(4 + self.underlay.len() + 32 + 65 + 32 + 8 + 20);
-        b.extend_from_slice(&(self.underlay.len() as u32).to_be_bytes());
-        b.extend_from_slice(&self.underlay);
-        b.extend_from_slice(&self.overlay);
-        b.extend_from_slice(&self.signature);
-        b.extend_from_slice(&self.nonce);
-        b.extend_from_slice(&self.timestamp.to_be_bytes());
-        b.extend_from_slice(&self.chequebook);
+        let mut b = Vec::new();
+        pb::put_bytes_field(&mut b, 1, &self.underlay);
+        pb::put_bytes_field(&mut b, 2, &self.signature);
+        pb::put_bytes_field(&mut b, 3, &self.overlay);
+        pb::put_bytes_field(&mut b, 4, &self.nonce);
+        pb::put_varint_field(&mut b, 5, self.timestamp);
+        pb::put_bytes_field(&mut b, 6, &self.chequebook);
         b
     }
 
-    /// Parse the [`BzzAddress::encode`] layout. `None` if malformed.
+    /// Parse a `pb.BzzAddress`. `None` if a fixed-width field is the wrong size
+    /// or the message is malformed.
     pub fn decode(b: &[u8]) -> Option<Self> {
-        let ul = u32::from_be_bytes(b.get(..4)?.try_into().ok()?) as usize;
-        let mut p = 4;
-        let underlay = b.get(p..p + ul)?.to_vec();
-        p += ul;
-        let overlay: Address = b.get(p..p + 32)?.try_into().ok()?;
-        p += 32;
-        let signature: [u8; 65] = b.get(p..p + 65)?.try_into().ok()?;
-        p += 65;
-        let nonce: [u8; 32] = b.get(p..p + 32)?.try_into().ok()?;
-        p += 32;
-        let timestamp = u64::from_be_bytes(b.get(p..p + 8)?.try_into().ok()?);
-        p += 8;
-        let chequebook: [u8; 20] = b.get(p..p + 20)?.try_into().ok()?;
+        let mut underlay = Vec::new();
+        let (mut overlay, mut signature, mut nonce, mut chequebook) =
+            ([0u8; 32], [0u8; 65], [0u8; 32], [0u8; 20]);
+        let mut timestamp = 0u64;
+        let mut bad = false;
+        pb::fields(b, |f, _, p| match f {
+            1 => underlay = p.to_vec(),
+            2 if p.len() == 65 => signature.copy_from_slice(p),
+            3 if p.len() == 32 => overlay.copy_from_slice(p),
+            4 if p.len() == 32 => nonce.copy_from_slice(p),
+            5 => timestamp = pb::varint_of(p),
+            6 if p.len() == 20 => chequebook.copy_from_slice(p),
+            2 | 3 | 4 | 6 => bad = true, // a fixed-width field with a wrong length
+            _ => {}
+        })?;
+        if bad {
+            return None;
+        }
         Some(BzzAddress {
             underlay,
             overlay,

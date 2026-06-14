@@ -1,32 +1,40 @@
-//! The handshake **exchange** — a sync state machine, transport-agnostic.
-//!
-//! Two peers each send their signed [`BzzAddress`] and verify the other's; on
-//! success each holds the peer's proven overlay + blockchain address, and the
-//! connection is trusted. Like the `wire` pull-sync pollers, this is a pure
-//! `poll(bytes) -> {Send, Need, Done, Failed}` driver with no I/O — so the
+//! The bee handshake **exchange** (`pkg/p2p/libp2p/internal/handshake`,
+//! protocol `/swarm/handshake/15.0.0/handshake`) — a sync state machine,
+//! transport-agnostic. Like the `wire` pull-sync pollers, it is a pure
+//! `poll(bytes) -> {Send, Need, Done, Failed}` driver with no I/O, so the
 //! deterministic in-memory transport drives it synchronously (verified here)
-//! and the libp2p transport drives the same driver asynchronously. All async
-//! lives in the transport shell, never in this logic.
+//! and the libp2p transport drives the same driver asynchronously.
 //!
-//! This is the mutual identity exchange; bee's full handshake adds a Syn/Ack
-//! observed-underlay negotiation in protobuf (the byte-exact-interop step,
-//! deferred with the live transport). The binding it establishes is the same.
+//! The exchange is **asymmetric** (bee's `Handshake` initiator vs `Handle`
+//! responder), three [`crate::pb`] messages over gogo delimited framing:
+//!
+//! ```text
+//!   initiator ──Syn(observed=peer underlay)──▶ responder
+//!   initiator ◀────────SynAck(Syn, Ack)────── responder   (responder's identity)
+//!   initiator ──────────────Ack────────────▶ responder    (initiator's identity)
+//! ```
+//!
+//! Each side ends holding the peer's *verified* ethereum address (the overlay↔
+//! key binding checked by [`crate::BzzAddress::verify`]). The network id must
+//! match, or the peer is rejected.
+//!
+//! **Minimal vs bee.** bee uses the responder's echoed `ObservedUnderlay` to
+//! learn its own public address and re-sign (NAT traversal); melissi advertises
+//! its configured underlay and ignores the feedback. The observed underlay we
+//! send is carried but not validated (bee validates it against the peer id —
+//! the deferred live-interop refinement). The binding established is the same.
 
+use crate::pb::{Ack, Syn, SynAck};
 use crate::BzzAddress;
+use melissi_protobuf::{deframe, frame};
 
-/// A length-delimited frame: `len(4 BE) ‖ body`. (The transport carries one
-/// message; the prefix lets a byte-stream transport find message boundaries.)
-fn frame(body: &[u8]) -> Vec<u8> {
-    let mut f = Vec::with_capacity(4 + body.len());
-    f.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    f.extend_from_slice(body);
-    f
-}
-
-fn deframe(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
-    let len = u32::from_be_bytes(buf.get(..4)?.try_into().ok()?) as usize;
-    let end = 4 + len;
-    (buf.len() >= end).then(|| (buf[4..end].to_vec(), end))
+/// Which side of the asymmetric exchange this driver plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Dials, sends `Syn` first, sends its `Ack` last.
+    Initiator,
+    /// Accepts, replies `SynAck`, reads the peer's `Ack` last.
+    Responder,
 }
 
 /// What the driver wants the shell to do next.
@@ -38,50 +46,148 @@ pub enum HsOut {
     Need,
     /// Handshake complete: the peer's verified ethereum (blockchain) address.
     Done([u8; 20]),
-    /// The peer's address failed verification — drop the connection.
+    /// The peer's address failed verification, or the network id mismatched.
     Failed,
 }
 
-/// One side of the handshake. Symmetric: both peers run the same driver.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Start,
+    AwaitSynAck,
+    AwaitSyn,
+    AwaitAck,
+    Finish([u8; 20]),
+    Failed,
+}
+
+/// One side of the handshake driver.
 pub struct Handshake {
-    mine: Vec<u8>,
+    role: Role,
+    mine: BzzAddress,
     network_id: u64,
-    sent: bool,
-    done: bool,
+    full_node: bool,
+    /// The underlay we observed the peer at (goes in our `Syn`/`SynAck`).
+    observed: Vec<u8>,
+    step: Step,
     buf: Vec<u8>,
 }
 
 impl Handshake {
-    pub fn new(addr: &BzzAddress, network_id: u64) -> Self {
+    pub fn new(
+        role: Role,
+        mine: BzzAddress,
+        network_id: u64,
+        full_node: bool,
+        observed_peer_underlay: Vec<u8>,
+    ) -> Self {
         Handshake {
-            mine: frame(&addr.encode()),
+            role,
+            mine,
             network_id,
-            sent: false,
-            done: false,
+            full_node,
+            observed: observed_peer_underlay,
+            step: Step::Start,
             buf: Vec::new(),
         }
     }
 
+    fn my_ack(&self) -> Ack {
+        Ack {
+            address: self.mine.clone(),
+            network_id: self.network_id,
+            full_node: self.full_node,
+            welcome_message: String::new(),
+        }
+    }
+
+    /// Check the peer's `Ack`: network id matches and the signed overlay↔key
+    /// binding verifies. Returns the peer's ethereum address, or `None`.
+    fn check(&self, ack: &Ack) -> Option<[u8; 20]> {
+        (ack.network_id == self.network_id).then_some(())?;
+        ack.address.verify(self.network_id)
+    }
+
     /// Feed received bytes (empty to start / when none arrived), get the next
-    /// action. Send our address first, then verify the peer's.
+    /// action.
     pub fn poll(&mut self, input: &[u8]) -> HsOut {
         self.buf.extend_from_slice(input);
-        if !self.sent {
-            self.sent = true;
-            return HsOut::Send(self.mine.clone());
+        match (self.role, self.step) {
+            // initiator: send Syn first.
+            (Role::Initiator, Step::Start) => {
+                self.step = Step::AwaitSynAck;
+                let syn = Syn {
+                    observed_underlay: self.observed.clone(),
+                };
+                HsOut::Send(frame(&syn.encode()))
+            }
+            (Role::Initiator, Step::AwaitSynAck) => {
+                let Some((msg, n)) = deframe(&self.buf) else {
+                    return HsOut::Need;
+                };
+                self.buf.drain(..n);
+                match SynAck::decode(&msg).and_then(|sa| self.check(&sa.ack)) {
+                    Some(eth) => {
+                        // verified the responder; send our Ack, then finish.
+                        self.step = Step::Finish(eth);
+                        HsOut::Send(frame(&self.my_ack().encode()))
+                    }
+                    None => {
+                        self.step = Step::Failed;
+                        HsOut::Failed
+                    }
+                }
+            }
+
+            // responder: wait for the peer's Syn, reply SynAck.
+            (Role::Responder, Step::Start) => {
+                self.step = Step::AwaitSyn;
+                self.drive_responder()
+            }
+            (Role::Responder, Step::AwaitSyn) => self.drive_responder(),
+            (Role::Responder, Step::AwaitAck) => {
+                let Some((msg, n)) = deframe(&self.buf) else {
+                    return HsOut::Need;
+                };
+                self.buf.drain(..n);
+                match Ack::decode(&msg).and_then(|ack| self.check(&ack)) {
+                    Some(eth) => {
+                        self.step = Step::Finish(eth);
+                        HsOut::Done(eth)
+                    }
+                    None => {
+                        self.step = Step::Failed;
+                        HsOut::Failed
+                    }
+                }
+            }
+
+            (_, Step::Finish(eth)) => HsOut::Done(eth),
+            (_, Step::Failed) => HsOut::Failed,
+            // initiator never waits for a bare Syn/Ack; responder never a SynAck.
+            (Role::Initiator, Step::AwaitSyn | Step::AwaitAck)
+            | (Role::Responder, Step::AwaitSynAck) => HsOut::Failed,
         }
-        if self.done {
-            return HsOut::Need;
-        }
+    }
+
+    /// Responder: consume the peer's `Syn`, emit `SynAck`. `Need` until the
+    /// `Syn` frame is complete.
+    fn drive_responder(&mut self) -> HsOut {
         let Some((msg, n)) = deframe(&self.buf) else {
             return HsOut::Need;
         };
         self.buf.drain(..n);
-        self.done = true;
-        match BzzAddress::decode(&msg).and_then(|a| a.verify(self.network_id)) {
-            Some(eth) => HsOut::Done(eth),
-            None => HsOut::Failed,
-        }
+        let Some(_syn) = Syn::decode(&msg) else {
+            self.step = Step::Failed;
+            return HsOut::Failed;
+        };
+        self.step = Step::AwaitAck;
+        let synack = SynAck {
+            syn: Syn {
+                observed_underlay: self.observed.clone(),
+            },
+            ack: self.my_ack(),
+        };
+        HsOut::Send(frame(&synack.encode()))
     }
 }
 
@@ -91,59 +197,91 @@ mod tests {
     use melissi_crypto::public_eth_address;
 
     const NET: u64 = 1;
+    const UNDERLAY: &[u8] = &[0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62]; // /ip4/127.0.0.1/tcp/1634
 
-    fn addr(secret: &[u8; 32], nonce: u8) -> BzzAddress {
-        BzzAddress::new(
-            secret,
-            b"/ip4/127.0.0.1/tcp/1634",
-            NET,
-            [nonce; 32],
-            1_700_000_000,
-            [0u8; 20],
-        )
-        .unwrap()
+    fn bzz(secret: &[u8; 32], nonce: u8) -> BzzAddress {
+        BzzAddress::new(secret, UNDERLAY, NET, [nonce; 32], 1_700_000_000, [0u8; 20]).unwrap()
     }
 
-    /// Drive two handshake state machines against each other synchronously —
+    /// Drive an initiator and a responder against each other synchronously —
     /// the deterministic in-memory transport. Each ends with the other's
-    /// proven ethereum address.
+    /// proven ethereum address. This is bee's Syn → SynAck → Ack exchange.
     #[test]
     fn mutual_handshake_over_in_memory_pump() {
         let (sa, sb) = ([7u8; 32], [9u8; 32]);
-        let mut a = Handshake::new(&addr(&sa, 1), NET);
-        let mut b = Handshake::new(&addr(&sb, 2), NET);
+        let mut i = Handshake::new(Role::Initiator, bzz(&sa, 1), NET, true, UNDERLAY.to_vec());
+        let mut r = Handshake::new(Role::Responder, bzz(&sb, 2), NET, true, UNDERLAY.to_vec());
 
-        let HsOut::Send(msg_a) = a.poll(&[]) else {
-            panic!("a sends first")
+        // initiator → Syn
+        let HsOut::Send(syn) = i.poll(&[]) else {
+            panic!("initiator sends Syn first")
         };
-        let HsOut::Send(msg_b) = b.poll(&[]) else {
-            panic!("b sends first")
+        // responder consumes Syn → SynAck
+        assert_eq!(r.poll(&[]), HsOut::Need); // nothing yet
+        let HsOut::Send(synack) = r.poll(&syn) else {
+            panic!("responder replies SynAck")
         };
-
-        assert_eq!(
-            a.poll(&msg_b),
-            HsOut::Done(public_eth_address(&sb).unwrap())
-        );
-        assert_eq!(
-            b.poll(&msg_a),
-            HsOut::Done(public_eth_address(&sa).unwrap())
-        );
+        // initiator consumes SynAck → Ack (and has verified the responder)
+        let HsOut::Send(ack) = i.poll(&synack) else {
+            panic!("initiator sends Ack")
+        };
+        // initiator is now done with the responder's identity
+        assert_eq!(i.poll(&[]), HsOut::Done(public_eth_address(&sb).unwrap()));
+        // responder consumes Ack → done with the initiator's identity
+        assert_eq!(r.poll(&ack), HsOut::Done(public_eth_address(&sa).unwrap()));
     }
 
-    /// A peer presenting a tampered address is rejected (the connection is
-    /// untrusted) — the in-memory transport surfaces the same Failed verdict
-    /// any transport would.
+    /// A peer presenting a tampered address is rejected. Here the responder
+    /// forges its overlay; the initiator's check of the SynAck fails.
     #[test]
     fn tampered_peer_address_fails_handshake() {
-        let mut a = Handshake::new(&addr(&[7u8; 32], 1), NET);
-        let _ = a.poll(&[]); // a sends its addr
+        let mut i = Handshake::new(
+            Role::Initiator,
+            bzz(&[7u8; 32], 1),
+            NET,
+            true,
+            UNDERLAY.to_vec(),
+        );
+        let mut forged = bzz(&[9u8; 32], 2);
+        forged.overlay[0] ^= 0xff; // claim an overlay the key does not derive
+        let synack = SynAck {
+            syn: Syn {
+                observed_underlay: UNDERLAY.to_vec(),
+            },
+            ack: Ack {
+                address: forged,
+                network_id: NET,
+                full_node: true,
+                welcome_message: String::new(),
+            },
+        };
+        let _ = i.poll(&[]); // Syn
+        assert_eq!(i.poll(&frame(&synack.encode())), HsOut::Failed);
+    }
 
-        let mut forged = addr(&[9u8; 32], 2);
-        forged.overlay[0] ^= 0xff; // claim a different overlay than the key derives
-        let mut framed = (forged.encode().len() as u32).to_be_bytes().to_vec();
-        framed.extend_from_slice(&forged.encode());
-
-        assert_eq!(a.poll(&framed), HsOut::Failed);
+    /// A network-id mismatch is rejected even with a valid signature.
+    #[test]
+    fn network_id_mismatch_fails_handshake() {
+        let mut i = Handshake::new(
+            Role::Initiator,
+            bzz(&[7u8; 32], 1),
+            NET,
+            true,
+            UNDERLAY.to_vec(),
+        );
+        let synack = SynAck {
+            syn: Syn {
+                observed_underlay: UNDERLAY.to_vec(),
+            },
+            ack: Ack {
+                address: bzz(&[9u8; 32], 2),
+                network_id: NET + 1, // wrong network
+                full_node: true,
+                welcome_message: String::new(),
+            },
+        };
+        let _ = i.poll(&[]);
+        assert_eq!(i.poll(&frame(&synack.encode())), HsOut::Failed);
     }
 
     /// Bytes arriving in fragments (as a real stream delivers them) — the
@@ -151,18 +289,22 @@ mod tests {
     #[test]
     fn handshake_reassembles_fragmented_frames() {
         let (sa, sb) = ([7u8; 32], [9u8; 32]);
-        let mut a = Handshake::new(&addr(&sa, 1), NET);
-        let _ = a.poll(&[]);
-        let HsOut::Send(msg_b) = Handshake::new(&addr(&sb, 2), NET).poll(&[]) else {
+        let mut i = Handshake::new(Role::Initiator, bzz(&sa, 1), NET, true, UNDERLAY.to_vec());
+        let mut r = Handshake::new(Role::Responder, bzz(&sb, 2), NET, true, UNDERLAY.to_vec());
+        let HsOut::Send(syn) = i.poll(&[]) else {
             panic!()
         };
-        // deliver byte-by-byte: Need until the last byte completes the frame
-        for chunk in msg_b[..msg_b.len() - 1].chunks(1) {
-            assert_eq!(a.poll(chunk), HsOut::Need);
+        let HsOut::Send(synack) = r.poll(&syn) else {
+            panic!()
+        };
+        // deliver the SynAck byte-by-byte: Need until the last byte completes it
+        for chunk in synack[..synack.len() - 1].chunks(1) {
+            assert_eq!(i.poll(chunk), HsOut::Need);
         }
-        assert_eq!(
-            a.poll(&msg_b[msg_b.len() - 1..]),
-            HsOut::Done(public_eth_address(&sb).unwrap())
-        );
+        assert!(matches!(
+            i.poll(&synack[synack.len() - 1..]),
+            HsOut::Send(_)
+        ));
+        assert_eq!(i.poll(&[]), HsOut::Done(public_eth_address(&sb).unwrap()));
     }
 }

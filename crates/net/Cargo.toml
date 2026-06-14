@@ -16,8 +16,12 @@ libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures"]
 melissi-types = { path = "../types" }
 melissi-crypto = { path = "../crypto" }
 melissi-overlay = { path = "../overlay" }
+melissi-protobuf = { path = "../protobuf" }
 
-libp2p = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux"], optional = true }
+# key-type features (ecdsa/secp256k1/ed25519): a real bee peer's libp2p
+# identity is an ECDSA key — noise must decode it to verify the peer id.
+# dns: resolve the `/dnsaddr/testnet.ethswarm.org` bootnode chain at dial time.
+libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "ecdsa", "secp256k1", "ed25519"], optional = true }
 libp2p-stream = { version = "0.4.0-alpha", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
 futures = { version = "0.3", optional = true }
