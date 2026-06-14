@@ -217,7 +217,7 @@ impl Node {
                         continue; // outside the reserve: not synced
                     }
                     self.cursors.insert((peer, bin), head);
-                    let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
+                    let log = self.logs.entry((peer, bin)).or_default();
                     if head < log.next() {
                         // nothing in the HIST range: resolved without an
                         // answer (the standing offer is the LIVE tail)
@@ -244,7 +244,7 @@ impl Node {
                 self.disc.close(peer, bin);
                 self.disc.resolve(peer, bin);
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
-                let log = self.logs.entry((peer, bin)).or_insert_with(PeerBinLog::new);
+                let log = self.logs.entry((peer, bin)).or_default();
                 // An answer covers at least what was asked: a hostile
                 // under-stated Topmost must not leave next() > covered, or
                 // the round re-justifies itself and the advertisement loops

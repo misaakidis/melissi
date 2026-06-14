@@ -112,12 +112,11 @@ impl Harness {
                 for c in want {
                     let outcome = if self.bad.contains(&c) {
                         Outcome::Rejected // entry-fault: identical at every holder
-                    } else if self.peers[&peer].byzantine {
-                        Outcome::Missed // omission: advertises, never delivers
-                    } else if self.spurious.remove(&(peer, c)) {
-                        Outcome::Missed // the misfire: honest, but timed out once
-                    } else if !self.peers[&peer].holds(c) {
-                        Outcome::Missed // churned out under the claim
+                    } else if self.peers[&peer].byzantine    // omission: advertises, never delivers
+                        || self.spurious.remove(&(peer, c))  // the misfire: honest, but timed out once
+                        || !self.peers[&peer].holds(c)
+                    {
+                        Outcome::Missed // peer-fault: no chunk this round (any of the above)
                     } else {
                         Outcome::Delivered
                     };

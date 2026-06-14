@@ -67,6 +67,7 @@ pub enum ClientOut {
 }
 
 /// `Syn → Ack`: the cursors stream.
+#[derive(Default)]
 pub struct CursorsClient {
     buf: Vec<u8>,
     sent: bool,

@@ -212,8 +212,8 @@ mod tests {
         let (mut a, mut b) = scenario();
         let stored: BTreeSet<Triple> = [t(1), t(2), t(4)].into();
         let settled = |x: Triple| stored.contains(&x); // rejection does NOT settle
-        a.advance(&settled);
-        b.advance(&settled);
+        a.advance(settled);
+        b.advance(settled);
         assert_eq!(a.interval(), 2, "A must wedge just below the bad entry");
         assert_eq!(b.interval(), 3, "B holds no bad entry and drains");
         assert!(

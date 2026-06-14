@@ -238,7 +238,9 @@ impl Sim {
                     for c in want {
                         let outcome = if self.nodes[j].byzantine {
                             Outcome::Missed // omission: advertises, never serves
-                        } else if self.spurious_budget > 0 && splitmix(&mut self.rng) % 4 == 0 {
+                        } else if self.spurious_budget > 0
+                            && splitmix(&mut self.rng).is_multiple_of(4)
+                        {
                             self.spurious_budget -= 1;
                             Outcome::Missed // the misattributed timeout
                         } else if !self.nodes[j].index.contains(&c) {
