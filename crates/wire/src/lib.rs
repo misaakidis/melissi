@@ -22,3 +22,4 @@ pub mod bmt;
 pub mod codec;
 pub mod pb;
 pub mod postage;
+pub mod session;
