@@ -15,12 +15,21 @@
 //! forged: it is a commitment to the key.
 //!
 //! **What is here vs deferred.** The cryptographic binding above is pure and
-//! verified offline. The rest of bzz networking — the libp2p transport (TCP /
-//! noise / yamux), the protobuf handshake *exchange* (Syn/Ack/Synack), peer
-//! discovery, and live interop against bee nodes — needs a running peer to
-//! verify and is the deliberately-deferred transport layer (`crates/net` will
-//! grow it; it slots onto this identity and the `wire` pollers). Nothing here
-//! is faked: the identity is real and checked; the socket is not yet built.
+//! verified offline. On top of it sits the handshake *exchange* ([`handshake`])
+//! — a sync `poll`-driver, like the `wire` pollers, that swaps signed
+//! addresses and verifies the peer's; and the real libp2p [`transport`] (behind
+//! the `libp2p` feature, TCP / noise / yamux), which drives that *same* sync
+//! driver over a socket. Two melissi nodes complete the handshake over real
+//! TCP, each recovering the other's verified identity — that is what the
+//! `libp2p` feature's tests check. Still deferred, because they need a live bee
+//! peer: bee's exact protocol id and protobuf Syn/Ack/Synack (byte-exact
+//! interop), peer discovery, running the `wire` pull-sync session over the
+//! established connection, and devnet/mainnet interop. Nothing here is faked:
+//! the identity is real and checked, and the socket carries melissi↔melissi.
+
+pub mod handshake;
+#[cfg(feature = "libp2p")]
+pub mod transport;
 
 use melissi_crypto as crypto;
 use melissi_overlay::overlay_address;
@@ -89,6 +98,49 @@ impl BzzAddress {
         let signature = crypto::sign(secret, &crypto::eth_prefixed(&data))?;
         Some(BzzAddress {
             underlay: underlay.to_vec(),
+            overlay,
+            signature,
+            nonce,
+            timestamp,
+            chequebook,
+        })
+    }
+
+    /// Serialise for the wire (a self-contained fixed layout):
+    /// `underlay_len(4 BE) ‖ underlay ‖ overlay(32) ‖ sig(65) ‖ nonce(32) ‖
+    /// timestamp(8 BE) ‖ chequebook(20)`. NB this is melissi-internal framing;
+    /// bee's handshake carries the `pb.BzzAddress` protobuf, so byte-exact
+    /// interop is the (deferred) protobuf step — this suffices for melissi↔
+    /// melissi over any transport.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(4 + self.underlay.len() + 32 + 65 + 32 + 8 + 20);
+        b.extend_from_slice(&(self.underlay.len() as u32).to_be_bytes());
+        b.extend_from_slice(&self.underlay);
+        b.extend_from_slice(&self.overlay);
+        b.extend_from_slice(&self.signature);
+        b.extend_from_slice(&self.nonce);
+        b.extend_from_slice(&self.timestamp.to_be_bytes());
+        b.extend_from_slice(&self.chequebook);
+        b
+    }
+
+    /// Parse the [`BzzAddress::encode`] layout. `None` if malformed.
+    pub fn decode(b: &[u8]) -> Option<Self> {
+        let ul = u32::from_be_bytes(b.get(..4)?.try_into().ok()?) as usize;
+        let mut p = 4;
+        let underlay = b.get(p..p + ul)?.to_vec();
+        p += ul;
+        let overlay: Address = b.get(p..p + 32)?.try_into().ok()?;
+        p += 32;
+        let signature: [u8; 65] = b.get(p..p + 65)?.try_into().ok()?;
+        p += 65;
+        let nonce: [u8; 32] = b.get(p..p + 32)?.try_into().ok()?;
+        p += 32;
+        let timestamp = u64::from_be_bytes(b.get(p..p + 8)?.try_into().ok()?);
+        p += 8;
+        let chequebook: [u8; 20] = b.get(p..p + 20)?.try_into().ok()?;
+        Some(BzzAddress {
+            underlay,
             overlay,
             signature,
             nonce,

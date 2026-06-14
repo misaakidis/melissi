@@ -25,7 +25,8 @@ parity tests re-check the same ablation matrix on the shipped code.
 | `crates/wire` (`postage`) | bee's postage stamp — secp256k1 recovery over bee's exact digest, eth-prefixed → batch-owner address. The **entry-fault** half of self-verification | M3-b ✓ |
 | `crates/wire` (`codec`) | `MintedCodec`: mints real content-addressed, stamped chunks and validates deliveries — `bmt` mismatch → `Missed` (peer-fault, local), bad stamp → `Rejected` (entry-fault, global), both ok → `Delivered`, all from the bytes alone | M3-b ✓ |
 | `crates/net` (`BzzAddress`) | the handshake **identity**: the overlay↔key↔underlay binding, signed and verified (the overlay is a commitment to the key, so it can't be forged). Built on `crypto` + `overlay`. The verifiable part of bzz networking | M3-b ✓ |
-| `crates/net` (transport) | rust-libp2p transport (TCP/noise/yamux), the protobuf handshake *exchange*, discovery, **live bee devnet/mainnet interop**. The part that needs a running peer to verify — deferred, not guessed; it slots onto the identity above and the `wire` pollers | M3-b network |
+| `crates/net` (`handshake`/`transport`) | the handshake **exchange** as a sync `poll`-driver (like the `wire` pollers), and the real rust-libp2p **transport** (TCP/noise/yamux, opt-in `libp2p` feature) that drives the *same* driver over a socket — two melissi nodes complete the handshake over real TCP, each recovering the other's verified identity. The default build stays libp2p-free; the verified core never sees it | M3-b ✓ |
+| `crates/net` (bee interop) | bee's exact protocol id + protobuf Syn/Ack handshake (byte-exact interop), peer discovery, the `wire` pull-sync session over the connection, **live bee devnet/mainnet interop**. The part that needs a running peer to verify — deferred, not guessed; it slots onto the driver + identity above | network |
 
 ## Verification
 

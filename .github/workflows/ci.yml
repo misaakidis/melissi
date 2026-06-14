@@ -37,5 +37,8 @@ jobs:
       - name: test (parity matrix + all crates)
         run: cargo test --all
 
+      - name: test (libp2p transport — real TCP handshake, opt-in feature)
+        run: cargo test -p melissi-net --features libp2p
+
       - name: test (composite storm row — 722k states, release)
         run: cargo test --all --release -- --ignored

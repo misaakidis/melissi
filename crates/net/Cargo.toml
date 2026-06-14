@@ -3,9 +3,21 @@ name = "melissi-net"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "bzz networking: the handshake identity (overlay↔key↔underlay binding). The libp2p transport is the deferred, live-peer layer."
+description = "bzz networking: the handshake identity + exchange (pure), and an opt-in libp2p transport that drives the same sync drivers over real TCP."
+
+[features]
+default = []
+# The real transport. Opt-in so `net`'s default build (BzzAddress + the sync
+# handshake driver) stays dep-light and async-free — all of libp2p/tokio is
+# confined to this feature, and the verified core never sees it.
+libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures"]
 
 [dependencies]
 melissi-types = { path = "../types" }
 melissi-crypto = { path = "../crypto" }
 melissi-overlay = { path = "../overlay" }
+
+libp2p = { version = "0.56", features = ["tokio", "tcp", "noise", "yamux"], optional = true }
+libp2p-stream = { version = "0.4.0-alpha", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+futures = { version = "0.3", optional = true }
