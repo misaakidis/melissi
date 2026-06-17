@@ -32,6 +32,7 @@
 //! bee-exact and checked; only a connection to a running bee remains.
 
 pub mod handshake;
+pub mod hive;
 pub mod pb;
 #[cfg(feature = "libp2p")]
 pub mod pullsync;
