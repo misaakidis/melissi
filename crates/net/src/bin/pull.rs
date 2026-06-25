@@ -27,6 +27,11 @@
 //! MELISSI_RADIUS    reserve radius / tile depth (default 8).
 //! MELISSI_GRIND     proximity bits to grind our overlay to the bootnode (default 16).
 //! MELISSI_TIMEOUT   seconds to run before reporting (default 300).
+//! MELISSI_LISTEN_PORT  local TCP port to listen on (default: the advertised
+//!                   port). Set this when a tunnel maps a *different* public port
+//!                   to a local one — e.g. `bore local 7000 --to bore.pub` gives
+//!                   `bore.pub:NNNNN` → advertise /dns4/bore.pub/tcp/NNNNN and
+//!                   MELISSI_LISTEN_PORT=7000.
 //! ```
 
 use std::time::Duration;
@@ -68,7 +73,10 @@ async fn main() {
     let underlay: Multiaddr = format!("{base}/p2p/{peer_id}")
         .parse()
         .expect("MELISSI_UNDERLAY must be a base multiaddr like /ip4/IP/tcp/PORT");
-    let listen_port = tcp_port_of(&underlay).expect("underlay must carry a /tcp/ port");
+    let advertised_port = tcp_port_of(&underlay).expect("underlay must carry a /tcp/ port");
+    // The local listen port may differ from the advertised one when a tunnel maps
+    // a public port to a local one (bore/ngrok); default to the advertised port.
+    let listen_port = env_u64("MELISSI_LISTEN_PORT", advertised_port as u64) as u16;
 
     let bootnode = resolve_bootnode(network_id).await;
     eprintln!(
