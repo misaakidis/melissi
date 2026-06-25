@@ -18,7 +18,7 @@
 //! in-memory pump verifies it (see the tests) and the libp2p shell runs the
 //! same loop over real streams.
 
-use melissi_node::{Bin, Effect, Event, Node};
+use melissi_node::{Bin, Effect, Event, Node, Outcome};
 use melissi_settlement::BinId;
 use melissi_types::{PeerId, Triple};
 use std::collections::VecDeque;
@@ -124,5 +124,64 @@ impl Session {
 
     pub fn node(&self) -> &Node {
         &self.node
+    }
+}
+
+/// **The carrier seam.** Run one scheduled [`Op`] against a real connection and
+/// return the [`Event`] to feed back — or `None` if it could not be carried (a
+/// dropped / declining peer). This is the *only* thing a transport must provide
+/// to drive the verified pull-sync: everything above it ([`Session`], `Node`,
+/// `machine`) is sans-io and carrier-blind. The in-memory tests, the libp2p
+/// shell, and any future carrier (a full third-party client stack) each supply
+/// one `OpRunner`; the loop ([`drive`]) is identical for all of them.
+pub trait OpRunner {
+    /// Carry one operation. `async` so a real runner can do stream I/O; the
+    /// verified loop only awaits it and never names a transport.
+    fn run(&mut self, op: Op) -> impl std::future::Future<Output = Option<Event>>;
+}
+
+/// The empty / `Missed` event for an op that could not be carried — the
+/// shell-owned failure signal. An empty cursor set yields no offers; `Missed`
+/// wants reschedule elsewhere.
+pub fn failure_event(op: &Op) -> Event {
+    match op {
+        Op::Cursors { peer } => Event::CursorsResult {
+            peer: *peer,
+            cursors: Vec::new(),
+        },
+        Op::Offer { peer, bin, start } => Event::OfferResult {
+            peer: *peer,
+            bin: *bin,
+            start: *start,
+            refs: Vec::new(),
+            topmost: *start,
+        },
+        Op::Fetch {
+            peer, bin, want, ..
+        } => Event::FetchResult {
+            peer: *peer,
+            bin: *bin,
+            outcomes: want.iter().map(|&t| (t, Outcome::Missed)).collect(),
+        },
+    }
+}
+
+/// Drive a [`Session`] to quiescence over any [`OpRunner`] — the carrier-neutral
+/// pull loop. A carried result feeds back; a failure feeds `Missed`/empty so the
+/// node fails over — EXCEPT a failed `Offer`, which is DROPPED (feeding an empty
+/// offer for a blocked range re-arms the standing live subscription and spins:
+/// the `session_play` lesson). Returns when the puller quiesces.
+pub async fn drive<R: OpRunner>(session: &mut Session, runner: &mut R) {
+    let mut guard: u64 = 0;
+    while let Some(op) = session.next_op() {
+        guard += 1;
+        if guard > 1_000_000 {
+            break; // safety: a non-converging round (should not happen with real supply)
+        }
+        match runner.run(op.clone()).await {
+            Some(ev) => session.feed(ev),
+            None if !matches!(op, Op::Offer { .. }) => session.feed(failure_event(&op)),
+            None => {}
+        }
     }
 }

@@ -27,10 +27,10 @@ use crate::transport::{run_handshake, HANDSHAKE_PROTOCOL};
 use crate::BzzAddress;
 use libp2p::PeerId;
 use libp2p_stream::Control;
-use melissi_node::{Event, Outcome};
+use melissi_node::Event;
 use melissi_overlay::Neighbourhood;
 use melissi_wire::adapter::TripleCodec;
-use melissi_wire::session::{Op, Session};
+use melissi_wire::session::{Op, OpRunner, Session};
 use std::time::Duration;
 
 /// The node's own peer id for a neighbour (the `Session`/`Node` index a peer by
@@ -165,39 +165,28 @@ async fn open_stream(
     None
 }
 
-/// The empty/Missed result for an op that could not be run — the shell-owned
-/// failure signal (a dropped/declining peer). The node treats it as no supply
-/// from that peer and fails over to the others (an empty cursor set → no offers;
-/// Missed wants → reschedule elsewhere).
-fn failure_event(op: &Op) -> Event {
-    match op {
-        Op::Cursors { peer } => Event::CursorsResult {
-            peer: *peer,
-            cursors: Vec::new(),
-        },
-        Op::Offer { peer, bin, start } => Event::OfferResult {
-            peer: *peer,
-            bin: *bin,
-            start: *start,
-            refs: Vec::new(),
-            topmost: *start,
-        },
-        Op::Fetch {
-            peer, bin, want, ..
-        } => Event::FetchResult {
-            peer: *peer,
-            bin: *bin,
-            outcomes: want.iter().map(|&t| (t, Outcome::Missed)).collect(),
-        },
+/// The libp2p **carrier**: an [`OpRunner`] that routes each [`Op`] to its peer's
+/// libp2p connection and runs the matching pull-sync stream. This is the *only*
+/// libp2p-specific code on the pull path — the loop ([`melissi_wire::session::drive`])
+/// is carrier-neutral, so a future carrier supplies its own `OpRunner` and reuses
+/// it unchanged.
+struct Libp2pRunner<'a, C: TripleCodec> {
+    ctrl: &'a mut Control,
+    peers: &'a [(NodePeerId, PeerId)],
+    codec: &'a C,
+}
+
+impl<C: TripleCodec> OpRunner for Libp2pRunner<'_, C> {
+    async fn run(&mut self, op: Op) -> Option<Event> {
+        let target = self.peers.iter().find(|(m, _)| *m == op.peer())?.1;
+        crate::pullsync::run_op(self.ctrl, target, op, self.codec).await
     }
 }
 
 /// Drive the `Session` to quiescence against the assembled neighbourhood — the
-/// connect-pull half. Each scheduled [`Op`] is routed to its peer's libp2p
-/// connection (the `(NodePeerId, PeerId)` map); a failed op feeds the node a
-/// Missed/empty result so it fails over across the supply. The neighbours must
-/// already be dialed + handshaked. Returns once the puller quiesces (its reserve
-/// is filled from what the neighbourhood holds).
+/// connect-pull half. Builds the libp2p carrier and runs the carrier-neutral
+/// [`drive`](melissi_wire::session::drive) loop; the neighbours must already be
+/// dialed + handshaked. The reserve fills from what the neighbourhood holds.
 pub async fn assemble_and_pull<C: TripleCodec>(
     ctrl: &mut Control,
     neighbours: &[(NodePeerId, PeerId)],
@@ -207,68 +196,12 @@ pub async fn assemble_and_pull<C: TripleCodec>(
     for (mid, _) in neighbours {
         session.add_peer(*mid);
     }
-    let mut guard: u64 = 0;
-    while let Some(op) = session.next_op() {
-        guard += 1;
-        if guard > 1_000_000 {
-            break; // safety: a non-converging round (should not happen with real supply)
-        }
-        let target = neighbours
-            .iter()
-            .find(|(m, _)| *m == op.peer())
-            .map(|(_, p)| *p);
-        if logging() {
-            match &op {
-                Op::Cursors { .. } => eprintln!("  → cursors"),
-                Op::Offer { bin, .. } => eprintln!("  → offer bin {bin}"),
-                Op::Fetch { bin, want, .. } => {
-                    eprintln!("  → fetch bin {bin} ({} want)", want.len())
-                }
-            }
-        }
-        let result = match target {
-            Some(p) => crate::pullsync::run_op(ctrl, p, op.clone(), codec).await,
-            None => None,
-        };
-        if logging() && result.is_none() {
-            eprintln!("  ✗ op returned None (stream open/exchange failed)");
-        }
-        if logging() {
-            match &result {
-                Some(Event::CursorsResult { cursors, .. }) => eprintln!(
-                    "  ← cursors: {} bins, {} non-empty",
-                    cursors.len(),
-                    cursors.iter().filter(|(_, h)| *h > 0).count()
-                ),
-                Some(Event::OfferResult { bin, refs, .. }) => {
-                    if !refs.is_empty() {
-                        eprintln!("  ← offer bin {bin}: {} refs", refs.len());
-                    }
-                }
-                Some(Event::FetchResult { outcomes, .. }) => eprintln!(
-                    "  ← fetch: {} outcomes ({} delivered)",
-                    outcomes.len(),
-                    outcomes
-                        .iter()
-                        .filter(|(_, o)| matches!(o, Outcome::Delivered))
-                        .count()
-                ),
-                _ => {}
-            }
-        }
-        match result {
-            Some(ev) => session.feed(ev),
-            // a failed op. An Offer that found an empty range BLOCKS (the standing
-            // live subscription) — DROP it: feeding an empty offer would re-arm it
-            // and spin (the session_play lesson). Cursors/Fetch failures feed
-            // Missed/empty so the node treats that peer as no supply and fails over.
-            None => {
-                if !matches!(op, Op::Offer { .. }) {
-                    session.feed(failure_event(&op));
-                }
-            }
-        }
-    }
+    let mut runner = Libp2pRunner {
+        ctrl,
+        peers: neighbours,
+        codec,
+    };
+    melissi_wire::session::drive(session, &mut runner).await;
 }
 
 /// The remote address each connected peer was observed at — populated from
