@@ -70,3 +70,44 @@ impl Underlay for MelissiUnderlay {
         self.network_id
     }
 }
+
+/// An [`Underlay`] backed by `ant-p2p`'s connection layer: the `Control` and the
+/// `(overlay, peer-id)` watch that `ant_p2p::run` hands out (`RunConfig.control_tx`
+/// + `.peers`). [`crate::runtime::pull`] runs over it unchanged.
+///
+/// The adapter takes no `ant-p2p` dependency — its fields are standard types
+/// (`Control`, a `watch`, 32-byte overlays, `PeerId`), so only the binary that
+/// builds `RunConfig` and spawns `run` links ant. With it in place,
+/// [`MelissiUnderlay`] and the hand-rolled connection code are redundant.
+pub struct AntUnderlay {
+    /// The `Control` ant hands out (`RunConfig.control_tx`); ant's own modules
+    /// clone the same one.
+    pub control: Control,
+    /// ant's `(overlay, peer-id)` routing snapshot (`RunConfig.peers`).
+    pub peers: tokio::sync::watch::Receiver<Vec<(Address, PeerId)>>,
+    pub identity: BzzAddress,
+    pub network_id: u64,
+}
+
+impl Underlay for AntUnderlay {
+    fn control(&self) -> Control {
+        self.control.clone()
+    }
+    fn active_peers(&self) -> Vec<ActivePeer> {
+        self.peers
+            .borrow()
+            .iter()
+            .map(|&(overlay, libp2p)| ActivePeer {
+                overlay,
+                libp2p,
+                full_node: true,
+            })
+            .collect()
+    }
+    fn identity(&self) -> &BzzAddress {
+        &self.identity
+    }
+    fn network_id(&self) -> u64 {
+        self.network_id
+    }
+}
