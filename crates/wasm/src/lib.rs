@@ -122,8 +122,7 @@ impl Reserve {
                     self.held[node][id] = true;
                     self.deliveries += 1;
                     let from = self.nearest_holder(id as u32, node as u8);
-                    self.events
-                        .push(format!("deliver:{id}:{from}:{node}"));
+                    self.events.push(format!("deliver:{id}:{from}:{node}"));
                 }
             }
         }

@@ -61,6 +61,8 @@ pos MC_settlement         # settled-only advance: NoDrop + completeness + interv
 echo "== offer pacing (advertisement round; companion OfferPacing.tla) =="
 pos MC_pacing             # adverts = justifications (AdvertBound) and coverage still drains
 pos MC_pacing_griefed     # §6.2: instantly-empty answers cannot extort adverts beyond the floor
+echo "== neighbourhood (discovery logic; companion Neighbourhood.tla) =="
+pos MC_nhood              # converges: every bin to K, neighbourhood dense, working set bounded
 echo "== no-barrier windowed scheduling (companions DiscoveryBarrier.tla / WindowedLoad.tla) =="
 pos MC_barrier_off        # no barrier: honest holders scheduled despite a withholder, with NO timeout
 pos MC_barrier            # barrier + per-lister timeout drains (a scarce budget would not -- misattribution)
@@ -77,6 +79,8 @@ neg MC_noreset    Completeness     # permanent exclusion + one misfire -> chunk 
 neg MC_settlement_eager    NoDrop           # eager (master) advance -> an unfetched chunk is forgotten
 neg MC_settlement_noreject AdvanceComplete  # rejections don't settle -> resume bookkeeping wedges
 neg MC_respawn             AdvertBound      # unpaced re-advert -> the empty-offer respawn busy-loop
+neg MC_nhood_flat    NeighbourhoodComplete  # flat "K everywhere" -> neighbourhood never densely connects
+neg MC_nhood_noprune Bounded                # no shedding -> working set never contracts as depth rises
 neg MC_barrier_wedge Progress      # barrier without timeout -> one withholder wedges the whole bin
 neg MC_staggered     SkewBound     # staggered discovery -> a late offerer starts behind, skew tracks the head-start
 echo

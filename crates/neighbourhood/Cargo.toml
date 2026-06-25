@@ -1,0 +1,8 @@
+[package]
+name = "melissi-neighbourhood"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "the discovery (kademlia) topology policy — a 1:1 refinement of tla/Neighbourhood.tla: fill proximity bins to K, densely connect the neighbourhood, shed shallow surplus as depth rises."
+
+[dependencies]

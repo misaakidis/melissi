@@ -1644,6 +1644,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "melissi-neighbourhood"
+version = "0.1.0"
+
+[[package]]
 name = "melissi-net"
 version = "0.1.0"
 dependencies = [
