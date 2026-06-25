@@ -26,6 +26,12 @@ pub struct Reserve {
     converged: bool,
 }
 
+impl Default for Reserve {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl Reserve {
     #[wasm_bindgen(constructor)]
@@ -177,7 +183,7 @@ impl Reserve {
 
     pub fn has_origin(&self, node: u32) -> bool {
         let n = node as u8;
-        self.origins.iter().any(|&o| o == n)
+        self.origins.contains(&n)
     }
 
     pub fn progress(&self) -> f64 {
