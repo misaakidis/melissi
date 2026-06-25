@@ -195,17 +195,31 @@ pub async fn assemble_and_pull<C: TripleCodec>(
     }
 }
 
+/// The remote address each connected peer was observed at — populated from
+/// `ConnectionEstablished`. The responder echoes a dialer's address back in its
+/// `SynAck` (so the dialer learns its own observed address, which bee validates
+/// against its own peer id), so the server side needs this.
+pub type PeerAddrs =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PeerId, libp2p::Multiaddr>>>;
+
 /// Drive a libp2p swarm: poll its events (so connections + incoming streams make
-/// progress) and dial addresses sent on `dials`. Run on its own task; the
-/// `Control` taken from the swarm beforehand opens streams against it.
+/// progress), dial addresses sent on `dials`, and record each peer's remote
+/// address into `addrs`. Run on its own task; the `Control`s taken from the
+/// swarm beforehand open/accept streams against it.
 async fn drive_swarm(
     mut sw: libp2p::Swarm<libp2p_stream::Behaviour>,
     mut dials: tokio::sync::mpsc::UnboundedReceiver<libp2p::Multiaddr>,
+    addrs: PeerAddrs,
 ) {
     use libp2p::futures::StreamExt;
+    use libp2p::swarm::SwarmEvent;
     loop {
         tokio::select! {
-            _ = sw.select_next_some() => {}
+            ev = sw.select_next_some() => {
+                if let SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } = ev {
+                    addrs.lock().unwrap().insert(peer_id, endpoint.get_remote_address().clone());
+                }
+            }
             addr = dials.recv() => match addr {
                 Some(a) => { let _ = sw.dial(a); }
                 None => break,
@@ -219,6 +233,71 @@ fn peer_of(addr: &libp2p::Multiaddr) -> Option<PeerId> {
         libp2p::multiaddr::Protocol::P2p(id) => Some(id),
         _ => None,
     })
+}
+
+/// The address we observed `peer` at, with its `/p2p/` — what the responder
+/// echoes in its `SynAck.Syn` so the dialer learns its own observed address.
+/// Falls back to a non-empty placeholder if unseen (an empty observed omits the
+/// `Syn` field and the exchange fails; a melissi initiator ignores the content,
+/// bee validates it — hence the real address when we have it).
+fn observed_of(addrs: &PeerAddrs, peer: &PeerId) -> Vec<u8> {
+    if let Some(a) = addrs.lock().unwrap().get(peer).cloned() {
+        let mut a = a;
+        if !a
+            .iter()
+            .any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+        {
+            a.push(libp2p::multiaddr::Protocol::P2p(*peer));
+        }
+        return a.to_vec();
+    }
+    "/ip4/127.0.0.1/tcp/1634"
+        .parse::<libp2p::Multiaddr>()
+        .unwrap()
+        .to_vec()
+}
+
+/// The **responder/server** side — what makes this node *reachable*. A new peer
+/// (bee) dials us back to classify our reachability; if it cannot complete a
+/// handshake against us we are marked unreachable and pruned, never gossiped to
+/// or served. This accept-loop answers: inbound handshakes run our verified
+/// [`Role::Responder`] driver; inbound hive pushes are received (gossip). It is
+/// long-running — spawn it; `addrs` is the map [`drive_swarm`] fills.
+///
+/// Reachability beyond the dial-back also needs a routable advertised underlay
+/// (a public address bee can reach), which is deployment, not code.
+pub async fn serve(
+    mut server: Control,
+    mine: BzzAddress,
+    network_id: u64,
+    full_node: bool,
+    addrs: PeerAddrs,
+) {
+    use libp2p::futures::StreamExt;
+    let (mut hs_in, mut hive_in) = match (
+        server.accept(HANDSHAKE_PROTOCOL),
+        server.accept(PEERS_PROTOCOL),
+    ) {
+        (Ok(h), Ok(p)) => (h, p),
+        _ => return, // another acceptor already holds these protocols
+    };
+    loop {
+        tokio::select! {
+            Some((peer, mut s)) = hs_in.next() => {
+                let mine = mine.clone();
+                let observed = observed_of(&addrs, &peer);
+                tokio::spawn(async move {
+                    // answer the dial-back handshake (the reachability proof).
+                    let _ = run_handshake(&mut s, Role::Responder, &mine, network_id, full_node, observed).await;
+                });
+            }
+            Some((_peer, mut s)) = hive_in.next() => {
+                // a peer gossiped us its peers — receive + verify them.
+                let _ = receive_peers(&mut s, network_id).await;
+            }
+            else => break,
+        }
+    }
 }
 
 /// Our network identity + the tile that defines our reserve — what a [`run`]
@@ -250,7 +329,8 @@ pub async fn run<C: TripleCodec>(
     };
     let (dial_tx, dial_rx) = tokio::sync::mpsc::unbounded_channel();
     let _ = dial_tx.send(bootnode.clone());
-    tokio::spawn(drive_swarm(swarm, dial_rx));
+    let addrs: PeerAddrs = Default::default();
+    tokio::spawn(drive_swarm(swarm, dial_rx, addrs));
 
     // 1. handshake the bootnode (bee serves discovery only to handshaked peers).
     if handshake_neighbour(
@@ -563,6 +643,78 @@ mod tests {
             "exactly-once across both neighbours"
         );
         session.node().check_invariants().unwrap();
+    }
+
+    fn bzz(secret: &[u8; 32]) -> BzzAddress {
+        let underlay = "/ip4/127.0.0.1/tcp/1634"
+            .parse::<Multiaddr>()
+            .unwrap()
+            .to_vec();
+        BzzAddress::new(secret, &underlay, 1, [1u8; 32], 1_700_000_000, [0u8; 20]).unwrap()
+    }
+
+    /// The responder side: a node running [`serve`] accepts an INBOUND handshake
+    /// (the dial-back that proves reachability to bee) and the dialer recovers
+    /// its verified identity — our `Role::Responder` driver, now persistent and
+    /// behind a real listener. This is what makes melissi dial-back-ready.
+    #[tokio::test]
+    async fn serving_node_accepts_inbound_handshake() {
+        const NET: u64 = 1;
+        // server S: listen, then run the accept-loop on its swarm.
+        let mut s = node();
+        let s_peer = *s.local_peer_id();
+        let s_ctrl = s.behaviour().new_control();
+        s.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+        let s_addr = loop {
+            if let SwarmEvent::NewListenAddr { address, .. } = s.select_next_some().await {
+                break address;
+            }
+        };
+        let (s_dial_tx, s_dial_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _keep = s_dial_tx; // keep the channel open so the driver keeps running
+        let addrs: PeerAddrs = Default::default();
+        tokio::spawn(drive_swarm(s, s_dial_rx, addrs.clone()));
+        tokio::spawn(serve(s_ctrl, bzz(&[3u8; 32]), NET, true, addrs));
+
+        // client C: dial S and handshake it as initiator.
+        let mut c = node();
+        let mut c_ctrl = c.behaviour().new_control();
+        c.dial(s_addr.with_p2p(s_peer).unwrap()).unwrap();
+        tokio::spawn(async move {
+            loop {
+                c.select_next_some().await;
+            }
+        });
+        let observed = "/ip4/127.0.0.1/tcp/1634"
+            .parse::<Multiaddr>()
+            .unwrap()
+            .to_vec();
+        let eth = tokio::time::timeout(Duration::from_secs(15), async move {
+            let mut hs = loop {
+                match c_ctrl.open_stream(s_peer, HANDSHAKE_PROTOCOL).await {
+                    Ok(s) => break s,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
+            };
+            run_handshake(
+                &mut hs,
+                Role::Initiator,
+                &bzz(&[4u8; 32]),
+                NET,
+                true,
+                observed,
+            )
+            .await
+        })
+        .await
+        .expect("handshake timed out");
+
+        // C recovered S's verified identity — the inbound handshake was served.
+        assert_eq!(
+            eth,
+            Some(melissi_crypto::public_eth_address(&[3u8; 32]).unwrap())
+        );
     }
 
     /// Selection keeps the peers in our tile (proximity ≥ radius) and drops the
