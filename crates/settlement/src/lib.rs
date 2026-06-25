@@ -1,4 +1,4 @@
-//! Interval settlement — a refinement of `optimal-testbed/IntervalSettlement.tla`.
+//! Interval settlement — a refinement of `formal-models/tla/IntervalSettlement.tla`.
 //!
 //! The interval is pull-sync's only durable claim — covering a BinID says
 //! *never offer me this range again* — so advancing it is FORGETTING, and the

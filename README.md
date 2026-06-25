@@ -2,12 +2,13 @@
 
 A minimal, formal-driven Swarm node, starting from optimal pull-sync.
 
-The design and its verification live in the SWIPs repo:
-`SWIPs/PULLSYNC/pullsync-optimal-design.md` (the design, machine-checked in
-`optimal-testbed/`), `pullsync-optimal-implementation.md` (the refinement
-discipline), `pullsync-optimal-client.md` (this node's scope). The TLA+ suite
-is the spec of record; every crate here is a refinement of a named spec, and the
-parity tests re-check the same ablation matrix on the shipped code.
+The TLA+ specs of record are vendored in-tree at
+[`formal-models/tla/`](formal-models/tla/) — every crate is
+a refinement of a named spec, and the parity tests re-check the same ablation
+matrix on the shipped code. The specs are mirrored from the design repo, where
+the design and its analysis live: `SWIPs/PULLSYNC/pullsync-optimal-design.md`
+(the design), `pullsync-optimal-implementation.md` (the refinement discipline),
+`pullsync-optimal-client.md` (this node's scope).
 
 ## The verified core
 
@@ -54,10 +55,11 @@ against a live testnet bee. The spec ↔ Rust mapping is laid out line-for-line 
 ## Verification
 
 `cargo test` runs the parity matrix: the same positive configurations and
-ablations as `optimal-testbed/run.sh`, row for row, via an exhaustive
-explorer over the shipped machine — state counts are asserted equal to TLC's.
-The composite `storm` row (722k states) is `#[ignore]`d; run it with
-`cargo test -- --ignored`.
+ablations as [`formal-models/tla/run.sh`](formal-models/tla/run.sh), row for row,
+via an exhaustive explorer over the shipped machine — state counts are asserted
+equal to TLC's. The composite `storm` row (722k states) is `#[ignore]`d; run it
+with `cargo test -- --ignored`. To re-check against TLC directly, run that script
+(needs `tla2tools.jar`); see [`formal-models/tla/README.md`](formal-models/tla/README.md).
 
 ## Spec, not bee
 

@@ -1,6 +1,6 @@
 //! pullstate — the optimal pull-sync scheduling machine.
 //!
-//! A 1:1 refinement of `optimal-testbed/PullSyncerE.tla` (SWIPs repo). The TLA+
+//! A 1:1 refinement of `formal-models/tla/PullSyncerE.tla`. The TLA+
 //! module is the spec of record; this file is the refinement.
 //!
 //! **The machine is polymorphic in the chunk identity `C`.** It needs only an
@@ -50,7 +50,7 @@ pub use melissi_types::PeerId;
 
 /// The design knobs, mirroring the spec's `CONSTANT`s. Production ships
 /// [`Config::PRODUCTION`]; the rest exist so the parity tests can run the same
-/// ablation matrix as `optimal-testbed/run.sh`.
+/// ablation matrix as `formal-models/tla/run.sh`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Config {
     pub dedup: bool,            // §5.2  — one in-flight claim per id

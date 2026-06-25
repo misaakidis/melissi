@@ -1,5 +1,5 @@
 //! An exhaustive explorer over the shipped machine — the TLC analogue, so the
-//! parity matrix re-checks `optimal-testbed/run.sh` row for row on this code.
+//! parity matrix re-checks `formal-models/tla/run.sh` row for row on this code.
 //!
 //! The explorer plays the model's ENVIRONMENT: it enumerates every enabled
 //! action (the machine's own `Want`s plus honest `Deliver`s, budget-bounded
