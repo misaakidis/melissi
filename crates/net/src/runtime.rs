@@ -75,6 +75,41 @@ fn libp2p_peer_of(underlay: &[u8]) -> Option<PeerId> {
     })
 }
 
+/// Grind a handshake nonce until our overlay lands within `bits` proximity of
+/// `target` — i.e. inside that node's neighbourhood. Our ethereum address is
+/// fixed by our key; only the nonce is free (`overlay = keccak(ethAddr ‖
+/// networkID ‖ nonce)`), so placing our overlay is a small proof-of-work.
+///
+/// Why: bee gossips its neighbourhood peers (`kademlia.go`'s depth-gated
+/// broadcast) only to peers it considers neighbours — at/below its storage
+/// depth. A random overlay is in nobody's neighbourhood, so it is never a
+/// gossip target. Grinding our overlay close to a real node is the precondition
+/// for being one. Returns the best nonce found and the proximity it achieves
+/// (which may be `< bits` if `max_tries` is exhausted — the caller decides if it
+/// is deep enough).
+pub fn grind_overlay_nonce(
+    eth: &[u8; 20],
+    network_id: u64,
+    target: &[u8; 32],
+    bits: u8,
+    max_tries: u64,
+) -> ([u8; 32], u8) {
+    let mut best = ([0u8; 32], 0u8);
+    for i in 0..max_tries {
+        let mut nonce = [0u8; 32];
+        nonce[..8].copy_from_slice(&i.to_le_bytes());
+        let overlay = melissi_overlay::overlay_address(eth, network_id, &nonce);
+        let po = melissi_overlay::proximity(&overlay, target);
+        if po > best.1 {
+            best = (nonce, po);
+            if po >= bits {
+                break;
+            }
+        }
+    }
+    best
+}
+
 /// Accept one hive `peers` push from a connected peer and return the neighbours
 /// it reveals (verified + in our tile). bee broadcasts peers to a peer it
 /// admits; `None` if no push arrives (we wait on `ctrl.accept`).
@@ -842,6 +877,213 @@ mod tests {
             Err(_) => {
                 eprintln!("· no hive push within 30s (bee declined to gossip to a light peer)")
             }
+        }
+    }
+
+    /// The nonce grinder lands our overlay in a target's neighbourhood. Offline,
+    /// deterministic: our eth is fixed by the key, the target is arbitrary, and
+    /// grinding to a modest depth is a few thousand keccaks.
+    #[test]
+    fn grind_places_overlay_in_target_neighbourhood() {
+        let eth = melissi_crypto::public_eth_address(&[0x5au8; 32]).unwrap();
+        let target = overlay_address(
+            &melissi_crypto::public_eth_address(&[0x99u8; 32]).unwrap(),
+            10,
+            &[0x77; 32],
+        );
+        let (nonce, po) = grind_overlay_nonce(&eth, 10, &target, 12, 5_000_000);
+        assert!(po >= 12, "ground to proximity {po}, want ≥ 12");
+        // the returned nonce actually reproduces the claimed proximity.
+        let got = overlay_address(&eth, 10, &nonce);
+        assert_eq!(melissi_overlay::proximity(&got, &target), po);
+    }
+
+    /// The decisive live experiment: present to the testnet bootnode as a **full
+    /// node whose overlay is ground into the bootnode's own neighbourhood**, then
+    /// watch which of three things bee does — (a) gossips its neighbourhood peers
+    /// to us (`kademlia.go`'s depth-gated broadcast fires; discovery works, and
+    /// we try a cursors pull from the closest), (b) **closes the connection**
+    /// (the reachability prune — our `127.0.0.1` underlay is undialable, so bee
+    /// drops us before gossiping; reachability is the wall, not overlay/patience),
+    /// or (c) keeps us but stays silent past the ~15-minute timer.
+    ///
+    /// This isolates the variable the 30-second random-overlay probe could not:
+    /// being a *neighbour* removes "not in anyone's neighbourhood" as the reason
+    /// for silence. `#[ignore]`d (network + a ~16-minute wait). Run:
+    ///
+    /// ```text
+    /// cargo test -p melissi-net --features libp2p live_testnet_neighbour_pull -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn live_testnet_neighbour_pull() {
+        use crate::transport::run_handshake_learn;
+
+        const TESTNET: u64 = 10;
+        let addr = crate::dnsaddr::tcp_bootnodes(TESTNET)
+            .await
+            .expect("resolve testnet bootnode")
+            .into_iter()
+            .next()
+            .unwrap();
+        let boot = peer_of(&addr).unwrap();
+        let boot_underlay = addr.to_vec();
+        let secret = [0x5au8; 32];
+        let eth = melissi_crypto::public_eth_address(&secret).unwrap();
+        let our_underlay = "/ip4/127.0.0.1/tcp/1634"
+            .parse::<Multiaddr>()
+            .unwrap()
+            .to_vec();
+
+        // --- phase 1: handshake once to learn the bootnode's overlay -----------
+        let bee_overlay = {
+            let mut sw = node();
+            let mut ctrl = sw.behaviour().new_control();
+            sw.dial(addr.clone()).unwrap();
+            tokio::spawn(async move {
+                loop {
+                    sw.select_next_some().await;
+                }
+            });
+            let probe = BzzAddress::new(
+                &secret,
+                &our_underlay,
+                TESTNET,
+                [0x11; 32],
+                1_700_000_000,
+                [0u8; 20],
+            )
+            .unwrap();
+            let observed = boot_underlay.clone();
+            let learn = tokio::time::timeout(Duration::from_secs(30), async move {
+                let mut hs = loop {
+                    match ctrl.open_stream(boot, HANDSHAKE_PROTOCOL).await {
+                        Ok(s) => break s,
+                        Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                    }
+                };
+                run_handshake_learn(&mut hs, Role::Initiator, &probe, TESTNET, true, observed).await
+            })
+            .await
+            .expect("phase-1 handshake timed out");
+            let (id, ov) = learn.expect("phase-1 handshake verified");
+            let hx: String = id.iter().map(|b| format!("{b:02x}")).collect();
+            let ox: String = ov.iter().take(6).map(|b| format!("{b:02x}")).collect();
+            eprintln!("✓ phase 1: bootnode 0x{hx}, overlay 0x{ox}…");
+            ov
+        };
+
+        // --- phase 2: grind our overlay into the bootnode's neighbourhood ------
+        let (nonce, po) = grind_overlay_nonce(&eth, TESTNET, &bee_overlay, 18, 50_000_000);
+        eprintln!("✓ phase 2: ground our overlay to proximity {po} of the bootnode");
+        let mine = BzzAddress::new(
+            &secret,
+            &our_underlay,
+            TESTNET,
+            nonce,
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+
+        // --- phase 3: reconnect as a deep neighbour, watch ~16m -----------------
+        let mut sw = node();
+        let mut ctrl = sw.behaviour().new_control();
+        let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
+        let (closed_tx, mut closed_rx) = tokio::sync::mpsc::channel::<String>(4);
+        sw.dial(addr.clone()).unwrap();
+        tokio::spawn(async move {
+            loop {
+                if let SwarmEvent::ConnectionClosed { peer_id, cause, .. } =
+                    sw.select_next_some().await
+                {
+                    if peer_id == boot {
+                        let _ = closed_tx.send(format!("{cause:?}")).await;
+                    }
+                }
+            }
+        });
+        let mut hs = loop {
+            match ctrl.open_stream(boot, HANDSHAKE_PROTOCOL).await {
+                Ok(s) => break s,
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        };
+        run_handshake(
+            &mut hs,
+            Role::Initiator,
+            &mine,
+            TESTNET,
+            true,
+            boot_underlay.clone(),
+        )
+        .await
+        .expect("phase-3 handshake verified");
+        eprintln!("✓ phase 3: handshook as a deep neighbour (proximity {po}); watching ≤16m for gossip / prune…");
+
+        tokio::select! {
+            push = hive_in.next() => {
+                let Some((_p, mut stream)) = push else {
+                    eprintln!("· hive stream opened then closed with no peers");
+                    return;
+                };
+                let discovered = receive_peers(&mut stream, TESTNET).await;
+                let nbhd = Neighbourhood::new(overlay_address(&eth, TESTNET, &nonce), po.min(8));
+                let mut tile = select_neighbours(&nbhd, &discovered);
+                tile.sort_by(|a, b| b.proximity.cmp(&a.proximity));
+                eprintln!("✓ GOSSIP: bee pushed {} peers; {} in our tile", discovered.len(), tile.len());
+                if let Some(best) = tile.first() {
+                    eprintln!("  closest neighbour proximity {} — dialing for cursors…", best.proximity);
+                    sw_dial_and_cursors(&mut ctrl, best, &mine, TESTNET, &our_underlay).await;
+                } else {
+                    eprintln!("  (gossip arrived but no peer landed in our radius this push)");
+                }
+            }
+            closed = closed_rx.recv() => {
+                eprintln!("· bee CLOSED the connection ({}) — the reachability prune: an undialable underlay is dropped before the gossip timer, even as a deep neighbour. Reachability is the wall.", closed.unwrap_or_default());
+            }
+            _ = tokio::time::sleep(Duration::from_secs(16 * 60)) => {
+                eprintln!("· 16m: still connected, no gossip. A deep neighbour bee keeps but does not broadcast to — depth deeper than ground, or gossip otherwise gated.");
+            }
+        }
+    }
+
+    // Dial a discovered neighbour and pull its cursors — a live liveness check on
+    // a real storage neighbour (the channel a full pull then drains).
+    async fn sw_dial_and_cursors(
+        ctrl: &mut Control,
+        n: &Neighbour,
+        mine: &BzzAddress,
+        network_id: u64,
+        observed: &[u8],
+    ) {
+        let mut hs = match ctrl.open_stream(n.libp2p, HANDSHAKE_PROTOCOL).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("  · could not open handshake to neighbour: {e:?}");
+                return;
+            }
+        };
+        if run_handshake(
+            &mut hs,
+            Role::Initiator,
+            mine,
+            network_id,
+            true,
+            observed.to_vec(),
+        )
+        .await
+        .is_none()
+        {
+            eprintln!("  · neighbour handshake failed");
+            return;
+        }
+        match crate::pullsync::get_cursors(ctrl, n.libp2p).await {
+            Some(cursors) => eprintln!(
+                "  ✓ PULLED from a storage neighbour: {} cursors (live reserve channel open)",
+                cursors.len()
+            ),
+            None => eprintln!("  · neighbour negotiated cursors but returned none"),
         }
     }
 }

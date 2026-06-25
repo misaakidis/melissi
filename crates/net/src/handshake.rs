@@ -70,6 +70,10 @@ pub struct Handshake {
     observed: Vec<u8>,
     step: Step,
     buf: Vec<u8>,
+    /// The peer's overlay address, captured once its `Ack` verifies. Lets the
+    /// shell learn *where in the chunk space* the peer sits (to grind our own
+    /// overlay into its neighbourhood), not just its blockchain identity.
+    peer_overlay: Option<[u8; 32]>,
 }
 
 impl Handshake {
@@ -88,7 +92,14 @@ impl Handshake {
             observed: observed_peer_underlay,
             step: Step::Start,
             buf: Vec::new(),
+            peer_overlay: None,
         }
+    }
+
+    /// The peer's overlay address, available once the handshake reaches
+    /// [`HsOut::Done`] (the `Ack` verified). `None` before then / on failure.
+    pub fn peer_overlay(&self) -> Option<[u8; 32]> {
+        self.peer_overlay
     }
 
     fn my_ack(&self) -> Ack {
@@ -102,9 +113,11 @@ impl Handshake {
 
     /// Check the peer's `Ack`: network id matches and the signed overlay↔key
     /// binding verifies. Returns the peer's ethereum address, or `None`.
-    fn check(&self, ack: &Ack) -> Option<[u8; 20]> {
+    fn check(&mut self, ack: &Ack) -> Option<[u8; 20]> {
         (ack.network_id == self.network_id).then_some(())?;
-        ack.address.verify(self.network_id)
+        let eth = ack.address.verify(self.network_id)?;
+        self.peer_overlay = Some(ack.address.overlay);
+        Some(eth)
     }
 
     /// Feed received bytes (empty to start / when none arrived), get the next

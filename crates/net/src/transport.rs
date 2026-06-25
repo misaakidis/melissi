@@ -57,6 +57,43 @@ where
         full_node,
         observed_peer_underlay,
     );
+    drive_handshake(stream, &mut hs).await
+}
+
+/// As [`run_handshake`], but also returns the peer's *overlay* address (where it
+/// sits in the chunk space), not just its blockchain id. The overlay is what
+/// lets the shell grind its own overlay into the peer's neighbourhood — the
+/// precondition for receiving bee's neighbourhood gossip (`kademlia.go`'s
+/// depth-gated peer broadcast). `None` if the handshake fails.
+pub async fn run_handshake_learn<S>(
+    stream: &mut S,
+    role: Role,
+    mine: &BzzAddress,
+    network_id: u64,
+    full_node: bool,
+    observed_peer_underlay: Vec<u8>,
+) -> Option<([u8; 20], [u8; 32])>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
+    let mut hs = Handshake::new(
+        role,
+        mine.clone(),
+        network_id,
+        full_node,
+        observed_peer_underlay,
+    );
+    let eth = drive_handshake(stream, &mut hs).await?;
+    Some((eth, hs.peer_overlay()?))
+}
+
+/// The shared byte-pump: run a [`Handshake`] driver to completion over an async
+/// stream. Both [`run_handshake`] and [`run_handshake_learn`] use it; the only
+/// difference is what they read off the finished driver afterwards.
+async fn drive_handshake<S>(stream: &mut S, hs: &mut Handshake) -> Option<[u8; 20]>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
     let mut chunk = [0u8; 2048];
     let mut input: Vec<u8> = Vec::new();
     loop {
