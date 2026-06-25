@@ -238,17 +238,21 @@ mod tests {
     #[ignore]
     async fn live_testnet_handshake() {
         const TESTNET: u64 = 10;
-        // bee-0.testnet.ethswarm.org (from _dnsaddr TXT); peer id in the addr.
-        let peer_addr =
-            "/ip4/49.12.172.37/tcp/32490/p2p/QmZsYCbkUXWpfR34PmUwMJvHwJtGfbcMMoAp1G2EydkpRA";
-        let addr: Multiaddr = peer_addr.parse().unwrap();
-        let peer: libp2p::PeerId = match addr.iter().find_map(|p| match p {
-            libp2p::multiaddr::Protocol::P2p(id) => Some(id),
-            _ => None,
-        }) {
-            Some(id) => id,
-            None => panic!("no /p2p/ in addr"),
-        };
+        // resolve the testnet bootnode from /dnsaddr/testnet.ethswarm.org (the
+        // plain-TCP one our transport can dial); the peer id is in the addr.
+        let addr = crate::dnsaddr::tcp_bootnodes(TESTNET)
+            .await
+            .expect("resolve testnet bootnode")
+            .into_iter()
+            .next()
+            .unwrap();
+        let peer: libp2p::PeerId = addr
+            .iter()
+            .find_map(|p| match p {
+                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                _ => None,
+            })
+            .expect("bootnode carries a /p2p/");
         let observed = addr.to_vec(); // the multiaddr we dialed (valid for bee's Syn)
 
         // our identity: a fresh key, a syntactically valid underlay multiaddr
@@ -329,16 +333,19 @@ mod tests {
     async fn live_testnet_pullsync() {
         use crate::pullsync::get_cursors;
         const TESTNET: u64 = 10;
-        let peer_addr =
-            "/ip4/49.12.172.37/tcp/32490/p2p/QmZsYCbkUXWpfR34PmUwMJvHwJtGfbcMMoAp1G2EydkpRA";
-        let addr: Multiaddr = peer_addr.parse().unwrap();
+        let addr = crate::dnsaddr::tcp_bootnodes(TESTNET)
+            .await
+            .expect("resolve testnet bootnode")
+            .into_iter()
+            .next()
+            .unwrap();
         let peer = addr
             .iter()
             .find_map(|p| match p {
                 libp2p::multiaddr::Protocol::P2p(id) => Some(id),
                 _ => None,
             })
-            .expect("no /p2p/ in addr");
+            .expect("bootnode carries a /p2p/");
         let observed = addr.to_vec();
 
         let secret = [0x5au8; 32];

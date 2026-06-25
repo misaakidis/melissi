@@ -598,10 +598,12 @@ mod tests {
     #[ignore]
     async fn live_testnet_discovery() {
         const TESTNET: u64 = 10;
-        let addr: Multiaddr =
-            "/ip4/49.12.172.37/tcp/32490/p2p/QmZsYCbkUXWpfR34PmUwMJvHwJtGfbcMMoAp1G2EydkpRA"
-                .parse()
-                .unwrap();
+        let addr = crate::dnsaddr::tcp_bootnodes(TESTNET)
+            .await
+            .expect("resolve testnet bootnode")
+            .into_iter()
+            .next()
+            .unwrap();
         let boot = peer_of(&addr).unwrap();
 
         let secret = [0x5au8; 32];

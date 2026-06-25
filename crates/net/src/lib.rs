@@ -31,6 +31,7 @@
 //! interop. Nothing here is faked: identity, protobuf, and protocol id are all
 //! bee-exact and checked; only a connection to a running bee remains.
 
+pub mod dnsaddr;
 pub mod handshake;
 pub mod hive;
 pub mod pb;

@@ -1652,6 +1652,7 @@ name = "melissi-net"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "hickory-resolver",
  "libp2p",
  "libp2p-stream",
  "melissi-crypto",

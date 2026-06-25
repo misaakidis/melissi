@@ -12,7 +12,7 @@ default = []
 # confined to this feature, and the verified core never sees it. The feature
 # also pulls `wire` (the pull-sync pollers + `Session`) since the pull-sync
 # shell runs over the same libp2p streams.
-libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures", "dep:melissi-wire", "dep:melissi-node", "dep:melissi-settlement", "dep:melissi-machine"]
+libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures", "dep:hickory-resolver", "dep:melissi-wire", "dep:melissi-node", "dep:melissi-settlement", "dep:melissi-machine"]
 
 [dependencies]
 melissi-types = { path = "../types" }
@@ -32,5 +32,9 @@ melissi-machine = { path = "../machine", optional = true }
 # dns: resolve the `/dnsaddr/testnet.ethswarm.org` bootnode chain at dial time.
 libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "ecdsa", "secp256k1", "ed25519"], optional = true }
 libp2p-stream = { version = "0.4.0-alpha", optional = true }
+# The `/dnsaddr/` bootnode resolver's real TXT lookup. Same resolver libp2p's
+# `dns` transport already vendors — exposed directly so we get concrete bootnode
+# multiaddrs (with their `/p2p/` id) up front, before the handshake.
+hickory-resolver = { version = "0.25", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
