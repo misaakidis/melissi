@@ -256,17 +256,31 @@ async fn drive_swarm(
     use libp2p::swarm::SwarmEvent;
     loop {
         tokio::select! {
-            ev = sw.select_next_some() => {
-                if let SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } = ev {
+            ev = sw.select_next_some() => match ev {
+                SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                    if logging() {
+                        let dir = if endpoint.is_listener() { "← inbound (dial-back?)" } else { "→ outbound" };
+                        eprintln!("  {dir} connection: {peer_id} @ {}", endpoint.get_remote_address());
+                    }
                     addrs.lock().unwrap().insert(peer_id, endpoint.get_remote_address().clone());
                 }
-            }
+                SwarmEvent::ConnectionClosed { peer_id, cause, .. } if logging() => {
+                    eprintln!("  ✗ connection closed: {peer_id} ({cause:?})");
+                }
+                _ => {}
+            },
             addr = dials.recv() => match addr {
                 Some(a) => { let _ = sw.dial(a); }
                 None => break,
             }
         }
     }
+}
+
+/// Verbose connection/dial-back logging, opt-in via `MELISSI_LOG` (so the
+/// library stays silent under test, and a live run can watch reachability).
+fn logging() -> bool {
+    std::env::var("MELISSI_LOG").is_ok()
 }
 
 fn peer_of(addr: &libp2p::Multiaddr) -> Option<PeerId> {
@@ -323,9 +337,12 @@ pub async fn serve(
     while let Some((peer, mut s)) = hs_in.next().await {
         let mine = mine.clone();
         let observed = observed_of(&addrs, &peer);
+        if logging() {
+            eprintln!("  ← dial-back handshake opened by {peer}");
+        }
         tokio::spawn(async move {
             // answer the dial-back handshake (the reachability proof).
-            let _ = run_handshake(
+            let ok = run_handshake(
                 &mut s,
                 Role::Responder,
                 &mine,
@@ -334,6 +351,10 @@ pub async fn serve(
                 observed,
             )
             .await;
+            if logging() {
+                let mark = if ok.is_some() { "✓" } else { "✗" };
+                eprintln!("  {mark} dial-back handshake from {peer} — we are reachable");
+            }
         });
     }
 }
@@ -433,8 +454,14 @@ pub async fn run<C: TripleCodec>(
     {
         return;
     }
+    if logging() {
+        eprintln!("  ✓ handshaked bootnode; awaiting hive gossip…");
+    }
     // 2. receive its hive push and keep the neighbours in our tile.
     let neighbours = accept_hive_push(&mut ctrl, network_id, nbhd).await;
+    if logging() {
+        eprintln!("  · hive push: {} neighbours in our tile", neighbours.len());
+    }
     // 3. dial + handshake each neighbour; the connected ones are the supply.
     let mut connected: Vec<(NodePeerId, PeerId)> = Vec::new();
     let mut next: NodePeerId = 1;

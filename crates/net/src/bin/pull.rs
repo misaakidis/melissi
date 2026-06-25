@@ -52,6 +52,11 @@ async fn main() {
     let radius = env_u64("MELISSI_RADIUS", 8) as u8;
     let grind_bits = env_u64("MELISSI_GRIND", 16) as u8;
     let timeout = Duration::from_secs(env_u64("MELISSI_TIMEOUT", 300));
+    // Present as a full node (a storer) by default; MELISSI_FULLNODE=0 presents
+    // as a light node — bee won't announce us to others, but it still pushes its
+    // peer list to a connected light node (the weeb-3 discovery path), and a
+    // light node needs no dial-back reachability.
+    let full_node = env_u64("MELISSI_FULLNODE", 1) != 0;
     let secret = env_secret();
     let eth = melissi_crypto::public_eth_address(&secret).expect("valid secret");
 
@@ -95,7 +100,7 @@ async fn main() {
         [0u8; 20],
     )
     .expect("probe bzz");
-    let bee_overlay = learn_peer_overlay(bootnode.clone(), &probe, network_id, true)
+    let bee_overlay = learn_peer_overlay(bootnode.clone(), &probe, network_id, full_node)
         .await
         .expect("could not handshake the bootnode to learn its overlay");
     let (nonce, po) = grind_overlay_nonce(&eth, network_id, &bee_overlay, grind_bits, 50_000_000);
@@ -124,7 +129,7 @@ async fn main() {
     let id = Identity {
         bzz: &mine,
         network_id,
-        full_node: true,
+        full_node,
         neighbourhood: &nbhd,
     };
 
