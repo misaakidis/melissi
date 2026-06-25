@@ -21,6 +21,13 @@ wss = ["libp2p", "libp2p/websocket"]
 # underlay bee dials back. Composes a upnp behaviour alongside the stream one.
 upnp = ["libp2p", "libp2p/upnp", "libp2p/macros"]
 
+# The deployable pull-sync node (runtime::run + a routable identity). Needs the
+# real transport, so it only builds with the `libp2p` feature.
+[[bin]]
+name = "melissi-pull"
+path = "src/bin/pull.rs"
+required-features = ["libp2p"]
+
 [dependencies]
 melissi-types = { path = "../types" }
 melissi-crypto = { path = "../crypto" }

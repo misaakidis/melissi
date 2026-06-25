@@ -338,6 +338,40 @@ pub async fn serve(
     }
 }
 
+/// Handshake `bootnode` once over a throwaway connection and return its overlay
+/// address — so a node can grind its *own* overlay into the bootnode's
+/// neighbourhood ([`grind_overlay_nonce`]) before presenting itself, the
+/// precondition for receiving that node's neighbourhood gossip. Builds and
+/// drives its own swarm; `None` if the handshake fails.
+pub async fn learn_peer_overlay(
+    bootnode: libp2p::Multiaddr,
+    mine: &BzzAddress,
+    network_id: u64,
+    full_node: bool,
+) -> Option<[u8; 32]> {
+    use libp2p::futures::StreamExt;
+    let mut sw = crate::swarm::build_swarm();
+    let mut ctrl = sw.behaviour().new_control();
+    let boot = peer_of(&bootnode)?;
+    sw.dial(bootnode.clone()).ok()?;
+    tokio::spawn(async move {
+        loop {
+            sw.select_next_some().await;
+        }
+    });
+    let mut hs = open_stream(&mut ctrl, boot, HANDSHAKE_PROTOCOL).await?;
+    let (_eth, overlay) = crate::transport::run_handshake_learn(
+        &mut hs,
+        Role::Initiator,
+        mine,
+        network_id,
+        full_node,
+        bootnode.to_vec(),
+    )
+    .await?;
+    Some(overlay)
+}
+
 /// Our network identity + the tile that defines our reserve — what a [`run`]
 /// presents to peers and uses to select neighbours.
 pub struct Identity<'a> {

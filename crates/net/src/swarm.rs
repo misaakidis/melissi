@@ -19,7 +19,16 @@ use libp2p_stream::Behaviour;
 
 /// Build the node's Swarm — TCP + noise + yamux + DNS. A fresh identity per call.
 pub fn build_swarm() -> Swarm<Behaviour> {
-    libp2p::SwarmBuilder::with_new_identity()
+    build_swarm_with_key(libp2p::identity::Keypair::generate_ed25519())
+}
+
+/// As [`build_swarm`], but with a *given* libp2p identity. A reachable node needs
+/// this: bee dials back the underlay we advertise, and that underlay must carry
+/// our `/p2p/` id — so we must know our peer id up front (a fixed key), not a
+/// fresh random one. The key is the libp2p transport identity, distinct from the
+/// ethereum key that signs the overlay binding.
+pub fn build_swarm_with_key(key: libp2p::identity::Keypair) -> Swarm<Behaviour> {
+    libp2p::SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
             libp2p::tcp::Config::default(),
