@@ -17,4 +17,4 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "BSD-3-Clause"
-repository = "https://github.com/ethersphere/melissi"
+repository = "https://github.com/misaakidis/melissi"
