@@ -283,7 +283,7 @@ pub type PeerAddrs =
 /// address into `addrs`. Run on its own task; the `Control`s taken from the
 /// swarm beforehand open/accept streams against it.
 async fn drive_swarm(
-    mut sw: libp2p::Swarm<libp2p_stream::Behaviour>,
+    mut sw: libp2p::Swarm<crate::swarm::NodeBehaviour>,
     mut dials: tokio::sync::mpsc::UnboundedReceiver<libp2p::Multiaddr>,
     addrs: PeerAddrs,
 ) {
@@ -407,7 +407,7 @@ pub async fn learn_peer_overlay(
 ) -> Option<[u8; 32]> {
     use libp2p::futures::StreamExt;
     let mut sw = crate::swarm::build_swarm();
-    let mut ctrl = sw.behaviour().new_control();
+    let mut ctrl = sw.behaviour().stream.new_control();
     let boot = peer_of(&bootnode)?;
     sw.dial(bootnode.clone()).ok()?;
     tokio::spawn(async move {
@@ -447,7 +447,7 @@ pub struct Identity<'a> {
 /// public address bee can dial) is the one remaining requirement, and it is
 /// deployment, not code.
 pub async fn run<C: TripleCodec>(
-    swarm: libp2p::Swarm<libp2p_stream::Behaviour>,
+    swarm: libp2p::Swarm<crate::swarm::NodeBehaviour>,
     bootnode: libp2p::Multiaddr,
     id: &Identity<'_>,
     session: &mut Session,
@@ -455,8 +455,8 @@ pub async fn run<C: TripleCodec>(
 ) {
     let (mine, network_id, full_node, nbhd) =
         (id.bzz, id.network_id, id.full_node, id.neighbourhood);
-    let mut ctrl = swarm.behaviour().new_control();
-    let serve_ctrl = swarm.behaviour().new_control();
+    let mut ctrl = swarm.behaviour().stream.new_control();
+    let serve_ctrl = swarm.behaviour().stream.new_control();
     let Some(boot_peer) = peer_of(&bootnode) else {
         return;
     };
@@ -530,7 +530,7 @@ pub async fn run<C: TripleCodec>(
 /// neighbourhood is a single chosen peer rather than a gossiped tile. Returns
 /// when the puller quiesces (the reserve filled from what that peer holds).
 pub async fn pull_direct<C: TripleCodec>(
-    swarm: libp2p::Swarm<libp2p_stream::Behaviour>,
+    swarm: libp2p::Swarm<crate::swarm::NodeBehaviour>,
     peer_addr: libp2p::Multiaddr,
     mine: &BzzAddress,
     network_id: u64,
@@ -538,7 +538,7 @@ pub async fn pull_direct<C: TripleCodec>(
     session: &mut Session,
     codec: &C,
 ) {
-    let mut ctrl = swarm.behaviour().new_control();
+    let mut ctrl = swarm.behaviour().stream.new_control();
     let Some(peer) = peer_of(&peer_addr) else {
         return;
     };
@@ -546,14 +546,14 @@ pub async fn pull_direct<C: TripleCodec>(
     // disconnects us and never registers our overlay — Resetting every later
     // pull-sync stream. Live before the handshake so the acceptor is ready.
     tokio::spawn(crate::pricing::serve_pricing(
-        swarm.behaviour().new_control(),
+        swarm.behaviour().stream.new_control(),
     ));
     // Answer bee's dial-back (the responder) so bee learns a real listen address
     // for us and PERSISTS our overlay — without it bee Resets our pull-sync
     // streams with "overlay address for peer not found". The caller listens.
     let addrs: PeerAddrs = Default::default();
     tokio::spawn(serve(
-        swarm.behaviour().new_control(),
+        swarm.behaviour().stream.new_control(),
         mine.clone(),
         network_id,
         full_node,
@@ -625,7 +625,7 @@ mod tests {
         RADIUS + (c.address[31] % NBINS)
     }
 
-    fn node() -> Swarm<libp2p_stream::Behaviour> {
+    fn node() -> Swarm<crate::swarm::NodeBehaviour> {
         crate::swarm::build_swarm()
     }
 
@@ -695,7 +695,7 @@ mod tests {
     async fn spawn_server(reserve: Arc<Reserve>, codec: Arc<MintedCodec>) -> (PeerId, Multiaddr) {
         let mut sw = node();
         let peer = *sw.local_peer_id();
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         let mut cur_in = ctrl.accept(crate::pullsync::CURSORS_PROTOCOL).unwrap();
         let mut pull_in = ctrl.accept(crate::pullsync::PULLSYNC_PROTOCOL).unwrap();
         sw.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -807,7 +807,7 @@ mod tests {
 
         // client: dial both neighbours, then assemble_and_pull.
         let mut cl = node();
-        let mut ctrl = cl.behaviour().new_control();
+        let mut ctrl = cl.behaviour().stream.new_control();
         cl.dial(a_addr.with_p2p(a_peer).unwrap()).unwrap();
         cl.dial(b_addr.with_p2p(b_peer).unwrap()).unwrap();
         tokio::spawn(async move {
@@ -862,7 +862,7 @@ mod tests {
         // server S: listen, then run the accept-loop on its swarm.
         let mut s = node();
         let s_peer = *s.local_peer_id();
-        let s_ctrl = s.behaviour().new_control();
+        let s_ctrl = s.behaviour().stream.new_control();
         s.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
             .unwrap();
         let s_addr = loop {
@@ -878,7 +878,7 @@ mod tests {
 
         // client C: dial S and handshake it as initiator.
         let mut c = node();
-        let mut c_ctrl = c.behaviour().new_control();
+        let mut c_ctrl = c.behaviour().stream.new_control();
         c.dial(s_addr.with_p2p(s_peer).unwrap()).unwrap();
         tokio::spawn(async move {
             loop {
@@ -976,7 +976,7 @@ mod tests {
         let radius: u8 = 8; // a representative reserve depth for the probe
 
         let mut sw = node();
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
         sw.dial(addr.clone()).unwrap();
         tokio::spawn(async move {
@@ -1094,7 +1094,7 @@ mod tests {
         // --- phase 1: handshake once to learn the bootnode's overlay -----------
         let bee_overlay = {
             let mut sw = node();
-            let mut ctrl = sw.behaviour().new_control();
+            let mut ctrl = sw.behaviour().stream.new_control();
             sw.dial(addr.clone()).unwrap();
             tokio::spawn(async move {
                 loop {
@@ -1144,7 +1144,7 @@ mod tests {
 
         // --- phase 3: reconnect as a deep neighbour, watch ~16m -----------------
         let mut sw = node();
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
         let (closed_tx, mut closed_rx) = tokio::sync::mpsc::channel::<String>(4);
         sw.dial(addr.clone()).unwrap();
@@ -1282,7 +1282,7 @@ mod tests {
 
         let key = libp2p::identity::Keypair::generate_ed25519();
         let mut sw = crate::swarm::build_swarm_wss_with_key(key).await;
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
         let (closed_tx, mut closed_rx) = tokio::sync::mpsc::channel::<String>(4);
         sw.dial(addr.clone()).unwrap();

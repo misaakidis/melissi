@@ -19,7 +19,7 @@ wss = ["libp2p", "libp2p/websocket"]
 # Automatic NAT traversal: ask the router (UPnP-IGD) to port-map our listen port
 # and report our routable external address (`swarm::build_swarm_upnp`), the
 # underlay bee dials back. Composes a upnp behaviour alongside the stream one.
-upnp = ["libp2p", "libp2p/upnp", "libp2p/macros"]
+upnp = ["libp2p", "libp2p/upnp"]
 
 # The deployable pull-sync node (runtime::run + a routable identity). Needs the
 # real transport, so it only builds with the `libp2p` feature.
@@ -44,7 +44,7 @@ melissi-machine = { path = "../machine", optional = true }
 # key-type features (ecdsa/secp256k1/ed25519): a real bee peer's libp2p
 # identity is an ECDSA key — noise must decode it to verify the peer id.
 # dns: resolve the `/dnsaddr/testnet.ethswarm.org` bootnode chain at dial time.
-libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "ecdsa", "secp256k1", "ed25519"], optional = true }
+libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "ecdsa", "secp256k1", "ed25519", "identify", "ping", "macros"], optional = true }
 libp2p-stream = { version = "0.4.0-alpha", optional = true }
 # The `/dnsaddr/` bootnode resolver's real TXT lookup. Same resolver libp2p's
 # `dns` transport already vendors — exposed directly so we get concrete bootnode

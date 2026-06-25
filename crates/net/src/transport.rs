@@ -155,7 +155,7 @@ mod tests {
     // underlay would omit the `Syn` field and be rejected, as bee rejects it.
     const OBSERVED: &[u8] = &[0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62];
 
-    fn node() -> Swarm<libp2p_stream::Behaviour> {
+    fn node() -> Swarm<crate::swarm::NodeBehaviour> {
         crate::swarm::build_swarm()
     }
 
@@ -186,7 +186,7 @@ mod tests {
         // node A: listen, accept the handshake stream, run the driver (server).
         let mut a = node();
         let a_peer = *a.local_peer_id();
-        let mut a_ctrl = a.behaviour().new_control();
+        let mut a_ctrl = a.behaviour().stream.new_control();
         let mut a_incoming = a_ctrl.accept(HANDSHAKE_PROTOCOL).unwrap();
         a.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
             .unwrap();
@@ -216,7 +216,7 @@ mod tests {
 
         // node B: dial A, open the handshake stream, run the driver (client).
         let mut b = node();
-        let mut b_ctrl = b.behaviour().new_control();
+        let mut b_ctrl = b.behaviour().stream.new_control();
         b.dial(addr.with_p2p(a_peer).unwrap()).unwrap();
         tokio::spawn(async move {
             loop {
@@ -308,7 +308,7 @@ mod tests {
         .unwrap();
 
         let mut sw = node();
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         sw.dial(addr).unwrap();
         tokio::spawn(async move {
             loop {
@@ -399,7 +399,7 @@ mod tests {
         .unwrap();
 
         let mut sw = node();
-        let mut ctrl = sw.behaviour().new_control();
+        let mut ctrl = sw.behaviour().stream.new_control();
         sw.dial(addr).unwrap();
         tokio::spawn(async move {
             loop {
@@ -592,7 +592,7 @@ mod tests {
         // server node A: accept cursors + pullsync, serve each incoming stream.
         let mut a = node();
         let a_peer = *a.local_peer_id();
-        let mut a_ctrl = a.behaviour().new_control();
+        let mut a_ctrl = a.behaviour().stream.new_control();
         let mut cursors_in = a_ctrl.accept(CURSORS_PROTOCOL).unwrap();
         let mut pull_in = a_ctrl.accept(PULLSYNC_PROTOCOL).unwrap();
         a.listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -625,7 +625,7 @@ mod tests {
 
         // client node B: dial A, then drive the Session to convergence.
         let mut b = node();
-        let mut b_ctrl = b.behaviour().new_control();
+        let mut b_ctrl = b.behaviour().stream.new_control();
         b.dial(addr.with_p2p(a_peer).unwrap()).unwrap();
         tokio::spawn(async move {
             loop {
