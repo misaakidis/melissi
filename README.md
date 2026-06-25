@@ -5,10 +5,7 @@ A minimal, formal-driven Swarm node, starting from optimal pull-sync.
 The TLA+ specs of record are vendored in-tree at
 [`formal-models/tla/`](formal-models/tla/) — every crate is
 a refinement of a named spec, and the parity tests re-check the same ablation
-matrix on the shipped code. The specs are mirrored from the design repo, where
-the design and its analysis live: `SWIPs/PULLSYNC/pullsync-optimal-design.md`
-(the design), `pullsync-optimal-implementation.md` (the refinement discipline),
-`pullsync-optimal-client.md` (this node's scope).
+matrix on the shipped code.
 
 ## The verified core
 
@@ -41,7 +38,7 @@ against a live testnet bee. The spec ↔ Rust mapping is laid out line-for-line 
 | `crates/overlay` | proximity order + overlay address — the fundamentals that *define* the reserve (proximity ≥ radius) and neighbourhood (spec §1.1.4, §2.2.1). Spec PO is the full shared-leading-bit count (`0..=255`, self saturates), **not** bee's `MaxPO=31` cap (isolated in `bee_wire_bin`). Byte-exact vs bee's vectors | M3-b ✓ |
 | `crates/machine` | `PullSyncerE.tla` — the scheduling machine, **polymorphic in the chunk identity `C`** (it needs only `Copy + Ord + Hash` — it schedules, it never verifies). Model-checked over abstract `u32` ids (exact TLC state-count parity), run over the real `Triple` | M0 ✓ |
 | `crates/settlement` | `IntervalSettlement.tla` — settle before you forget; the interval is a `u64` high-water, so eager advance and disconnected ranges are unrepresentable | M1 ✓ |
-| `crates/neighbourhood` | `Neighbourhood.tla` — the discovery (kademlia) topology policy: saturate each proximity bin to `K`, densely connect the neighbourhood (bins ≥ depth), shed shallow surplus as depth rises. The bee-exact peers wire (`net::hive`) feeds it candidates. Exact TLC state-count parity (the explorer re-runs `MC_nhood`/`flat`/`noprune`: 48/27/48) | ✓ |
+| `crates/neighbourhood` | `Neighbourhood.tla` — discovery + the kademlia topology policy, modelled together: discovery is incremental and gated by connectivity (the `net::hive` gossip feedback — no oracle pool), peers split willing/declining (a real bee declines a light peer), then saturate each bin to `K`, densely connect the neighbourhood (bins ≥ depth), shed shallow surplus as depth rises. Three ablations (gossip / density / prune), exact TLC state-count parity (`MC_nhood`/`nogossip`/`flat`/`noprune`: 1001/2/811/1001) | ✓ |
 | `crates/node` | the sans-io core (events → effects) over `PullState<Triple>`; want-by-reference, one open offer per `(peer, bin)`, settlement the only durable transition | M1 ✓ |
 | `crates/sim` | deterministic self-play: k symmetric nodes over a seeded network; the floors measured — Θ-REP, exact network delivery floor, serve balance max−min ≤ 1, LIVE spread, small-gap re-sync; + fairness ablations (the floor-achieving knobs made falsifiable) | M2 ✓ |
 | `crates/wire` (`pb`/`adapter`) | bee's `pkg/pullsync` protobuf + delimited framing + LSB-first bitvector (byte-verified vs master); the adapter maps core effects onto the legacy coupling (positional bitvector, re-offer-on-fetch, zero-address). Identity ↔ wire is now trivial — `Triple` *is* the entry, so there is no synthetic codec | M3-a ✓ |

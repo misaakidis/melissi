@@ -1,8 +1,6 @@
 # TLA+ specs of record
 
-The specs the crates refine, vendored in-tree so melissi is self-contained. They
-are mirrored from the design repo (`SWIPs/PULLSYNC/optimal-testbed`); the design
-and its analysis live there (`pullsync-optimal-design.md`).
+The specs the crates refine, vendored in-tree so melissi is self-contained.
 
 | spec | refined by | what it pins |
 |---|---|---|
@@ -12,10 +10,10 @@ and its analysis live there (`pullsync-optimal-design.md`).
 | `OfferPacing.tla` | `crates/node`, `crates/sim` | advertisements are justified, never a busy loop |
 | `DiscoveryBarrier.tla` | `crates/node` | no-wedge liveness — a withholding peer cannot stall a bin |
 | `WindowedLoad.tla` | `crates/node` | serve-balance under incremental, paged discovery |
+| `Neighbourhood.tla` | `crates/neighbourhood` | the discovery topology — saturate each bin to `K`, densely connect the neighbourhood, shed shallow surplus |
 
 `MC_*.{tla,cfg}` are the model-checking instances: the positives and the
-ablations (each ablation breaks exactly one named property). The neighbourhood
-specs are intentionally absent — no crate refines them yet.
+ablations (each ablation breaks exactly one named property).
 
 ## Verifying
 
