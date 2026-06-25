@@ -1,56 +1,66 @@
-//! neighbourhood — the discovery (kademlia) topology policy.
+//! neighbourhood — assembling the pull-sync supply.
 //!
-//! A 1:1 refinement of `formal-models/tla/Neighbourhood.tla`. The module is the spec of
-//! record; this file is the refinement, and `tests/parity.rs` re-runs its
-//! ablation matrix on the shipped policy and asserts the distinct-state count
-//! equals TLC's — the same translation-fidelity oracle `machine` uses.
+//! A 1:1 refinement of `formal-models/tla/Neighbourhood.tla`. The module is the
+//! spec of record; this file is the refinement, and `tests/parity.rs` re-runs
+//! its ablation matrix on the shipped policy and asserts the distinct-state
+//! count equals TLC's — the same translation-fidelity oracle `machine` uses.
 //!
-//! **What it decides.** Discovery (the hive peers push, verified bee-exact in
-//! `net::hive`) supplies a pool of reachable candidates, each in a proximity bin
-//! by shared-leading-bits with our overlay. This policy turns that pool into a
-//! connected topology: saturate every bin to `K` (route outward), connect to
-//! *every* candidate in the neighbourhood (the bins at/beyond depth — the slice
-//! we store and serve over pull-sync), and shed a bin's surplus once depth rises
-//! past it. It is abstract over the overlay arithmetic: `cand[b]` is a count, so
-//! the policy is model-checked over counts and run over real proximities.
+//! **What it is.** PullSyncerE assumes SUPPLY (design §3: every reserve chunk is
+//! held by some honest neighbour the node can reach). This crate discharges that
+//! premise: it discovers and connects the honest peers of the node's
+//! neighbourhood, the way `settlement` discharges the resume layer.
+//!
+//! **Grounded in the decomposition (§4).** The depth-`D` partition makes
+//! pull-sync the direct sum of independent neighbourhoods; the analysis is one
+//! tile of `k ∈ [2,8]` peers sharing the node's depth-`D` prefix, and the supply
+//! for that tile is its honest peers. So this models exactly that tile — not
+//! proximity bins, not routing. (Kademlia routing across the whole address space
+//! is a *different* problem, used by retrieval, not pull-sync; it is a deferred
+//! companion. The neighbourhood is structural locality, not Kademlia routing.)
+//!
+//! **The coupling that makes it non-trivial.** Discovery and connection depend on
+//! each other: the node knows only its bootstrap peer until it connects, and only
+//! a connected node learns more (the hive `peers` push — `net::hive`). The seed
+//! breaks the cycle. And not every neighbour connects — peers split WILLING
+//! (honest/reachable) and DECLINING (a real testnet bee declines a light peer);
+//! the node must connect *all* the willing ones, not stop at the first (a single
+//! connected holder is the single-source dependency §5.1 removes).
 //!
 //! Mapping to `Neighbourhood.tla`:
 //!
-//! | `Neighbourhood.tla`            | here                                       |
-//! |--------------------------------|--------------------------------------------|
-//! | `conn ∈ [Bins → Nat]`          | `conn: Vec<u32>` — connected count per bin |
-//! | `Cand`, `K`                    | `cand: Vec<u32>`, `k` — the environment    |
-//! | `PrioritizeNbhd`, `Pruning`    | [`Policy`] knobs (ablation only)           |
-//! | `Depth` (shallowest unsat, capped) | [`Neighbourhood::depth`]               |
-//! | `Fill(b)`, `Trim(b)`           | [`Neighbourhood::fill`] / [`Neighbourhood::trim`] — the only mutators |
-//! | `ConnLeCand` (safety)          | [`Neighbourhood::conn_le_cand`]            |
-//! | `Saturates`, `NeighbourhoodComplete`, `Bounded` (liveness) | the predicates of the same name, checked at terminals by the explorer |
+//! | `Neighbourhood.tla`                  | here                               |
+//! |--------------------------------------|------------------------------------|
+//! | `knownW`, `knownU`, `conn`           | `known_w`, `known_u`, `conn`       |
+//! | `Willing`, `Declining`               | `willing`, `declining`             |
+//! | `Gossip`, `ConnectAll`               | [`Policy`] knobs (ablation only)    |
+//! | `Bootstrapped`                       | [`Neighbourhood::bootstrapped`]     |
+//! | `DiscoverW`/`DiscoverU`/`Connect`    | the methods of the same name — the only mutators |
+//! | `ConnLeKnown` (safety)               | [`Neighbourhood::conn_le_known`]    |
+//! | `DiscoveryFinds`, `SupplyComplete`   | the predicates of the same name, checked at terminals by the explorer |
 //!
-//! Like the machine, the actions are the only mutators (`&mut self`, no
-//! setters), so a step cannot be split. The knobs exist to be *ablated*: the
-//! shipped policy is [`Policy::SHIPPED`]; turning one off reproduces exactly the
-//! `MC_nhood_flat` / `MC_nhood_noprune` counterexamples (see the tests).
+//! The actions are the only mutators (`&mut self`, no setters). The knobs exist
+//! to be *ablated*: shipped is [`Policy::SHIPPED`]; turning one off reproduces
+//! exactly the `MC_nhood_nogossip` / `MC_nhood_noconnect` counterexamples.
 
 pub mod explore;
 
-/// The two design choices, each a `Neighbourhood.tla` knob, each ablatable.
-/// Provably load-bearing: dropping either breaks a named property (the parity
-/// suite re-checks both), so neither is decoration.
+/// The two design choices, each a `Neighbourhood.tla` knob, each ablatable —
+/// dropping either breaks a named property (the parity suite re-checks both).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
-    /// Fill neighbourhood bins (≥ depth) past `K`, to every candidate — the
-    /// density the reserve/serving depends on. OFF = a flat "K everywhere"
-    /// policy (`NeighbourhoodComplete` fails).
-    pub prioritize_nbhd: bool,
-    /// Shed a bin's surplus once depth has risen past it. OFF = the working set
-    /// never contracts (`Bounded` fails).
-    pub pruning: bool,
+    /// A connected node learns more neighbours (the hive feedback loop). OFF =
+    /// the node never learns past its bootstrap peer (`DiscoveryFinds` fails).
+    pub gossip: bool,
+    /// Connect every honest neighbour, not merely enough to bootstrap. OFF = the
+    /// node connects only its seed — a single-source supply (`SupplyComplete`
+    /// fails; the dependency §5.1 removes).
+    pub connect_all: bool,
 }
 
 impl Policy {
     pub const SHIPPED: Policy = Policy {
-        prioritize_nbhd: true,
-        pruning: true,
+        gossip: true,
+        connect_all: true,
     };
 }
 
@@ -60,107 +70,114 @@ impl Default for Policy {
     }
 }
 
-/// The neighbourhood state: how many peers we hold in each proximity bin, given
-/// the reachable candidate pool `cand` and the saturation target `k`.
+/// The discovery + connection state of one neighbourhood tile: how many willing
+/// (honest) neighbours have been discovered (`known_w`), how many declining
+/// (`known_u`), and how many willing ones are connected (`conn`, the assembled
+/// supply). `willing`/`declining` are the tile's (unknown-to-the-node) honest
+/// and unreachable populations; the node starts knowing one willing peer (seed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Neighbourhood {
-    conn: Vec<u32>,
-    cand: Vec<u32>,
-    k: u32,
+    known_w: u32,
+    known_u: u32,
+    conn: u32,
+    willing: u32,
+    declining: u32,
     policy: Policy,
 }
 
 impl Neighbourhood {
-    /// A node with no connections yet, facing `cand[b]` candidates per bin (bins
-    /// `0..cand.len()`; the last is the closest), saturating at `k`.
-    pub fn new(cand: Vec<u32>, k: u32, policy: Policy) -> Self {
-        assert!(k > 0 && !cand.is_empty());
+    /// A node knowing only its bootstrap peer (one of the `willing` neighbours),
+    /// facing a tile of `willing` honest and `declining` unreachable peers.
+    pub fn new(willing: u32, declining: u32, policy: Policy) -> Self {
+        assert!(willing >= 1, "the bootstrap peer is a willing neighbour");
         Neighbourhood {
-            conn: vec![0; cand.len()],
-            cand,
-            k,
+            known_w: 1,
+            known_u: 0,
+            conn: 0,
+            willing,
+            declining,
             policy,
         }
     }
 
-    pub fn max_bin(&self) -> usize {
-        self.cand.len() - 1
+    pub fn conn(&self) -> u32 {
+        self.conn
     }
 
-    pub fn conn(&self) -> &[u32] {
-        &self.conn
+    /// The explorer's state key: `(known_w, known_u, conn)`.
+    pub fn state(&self) -> (u32, u32, u32) {
+        (self.known_w, self.known_u, self.conn)
     }
 
-    fn saturated(&self, b: usize) -> bool {
-        self.conn[b] >= self.k
+    /// Restore a state produced by [`Neighbourhood::state`] (the explorer
+    /// reconstructs a node to enumerate its successors). The populations and the
+    /// policy are unchanged — only the discovered/connected counts are set.
+    pub fn set_state(&mut self, (kw, ku, c): (u32, u32, u32)) {
+        self.known_w = kw;
+        self.known_u = ku;
+        self.conn = c;
     }
 
-    /// `Neighbourhood.tla` `Depth`: the shallowest unsaturated bin, capped at the
-    /// closest bin (which is always neighbourhood — bee never prunes it). All
-    /// saturated ⇒ the closest bin.
-    pub fn depth(&self) -> usize {
-        (0..=self.max_bin())
-            .find(|&b| !self.saturated(b))
-            .unwrap_or(self.max_bin())
+    /// Connected to at least one neighbour — the precondition for learning more.
+    pub fn bootstrapped(&self) -> bool {
+        self.conn > 0
     }
 
-    pub fn in_neighbourhood(&self, b: usize) -> bool {
-        b >= self.depth()
-    }
+    // --- actions (the only mutators) -----------------------------------------
 
-    /// `Fill(b)`: connect one more candidate in bin `b`. A bin draws a connection
-    /// while it is under `K` (route-saturation), OR it is in the neighbourhood
-    /// and the density rule is on. Returns whether it fired.
-    pub fn fill(&mut self, b: usize) -> bool {
-        let draw =
-            self.conn[b] < self.k || (self.policy.prioritize_nbhd && self.in_neighbourhood(b));
-        if self.conn[b] < self.cand[b] && draw {
-            self.conn[b] += 1;
+    /// `DiscoverW`: a connected node learns one more willing neighbour.
+    pub fn discover_w(&mut self) -> bool {
+        if self.policy.gossip && self.bootstrapped() && self.known_w < self.willing {
+            self.known_w += 1;
             true
         } else {
             false
         }
     }
 
-    /// `Trim(b)`: shed surplus from a bin that has fallen below depth (it was
-    /// filled densely as a neighbourhood bin; depth has since risen past it).
-    /// Returns whether it fired.
-    pub fn trim(&mut self, b: usize) -> bool {
-        if self.policy.pruning && !self.in_neighbourhood(b) && self.conn[b] > self.k {
-            self.conn[b] -= 1;
+    /// `DiscoverU`: a connected node learns one more declining neighbour.
+    pub fn discover_u(&mut self) -> bool {
+        if self.policy.gossip && self.bootstrapped() && self.known_u < self.declining {
+            self.known_u += 1;
             true
         } else {
             false
         }
     }
 
-    /// No action is enabled — the topology has settled (a fixed point).
+    /// `Connect`: connect one more known willing neighbour. With `connect_all`,
+    /// keep going to the whole honest neighbourhood; without it, connect only
+    /// enough to bootstrap (the first) and stop — the single-source policy.
+    pub fn connect(&mut self) -> bool {
+        if self.conn < self.known_w && (self.policy.connect_all || !self.bootstrapped()) {
+            self.conn += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// No action is enabled — discovery and connection have settled.
     pub fn terminal(&self) -> bool {
-        (0..=self.max_bin()).all(|b| {
-            let mut probe = self.clone();
-            !probe.fill(b) && !probe.trim(b)
-        })
+        let mut p = self.clone();
+        !p.discover_w() && !p.discover_u() && !p.connect()
     }
 
     // --- the spec's properties, as predicates at a state ---------------------
 
-    /// `ConnLeCand` (safety): never claim more peers than exist in a bin.
-    pub fn conn_le_cand(&self) -> bool {
-        (0..=self.max_bin()).all(|b| self.conn[b] <= self.cand[b])
+    /// `ConnLeKnown` (safety): only connect discovered-and-willing neighbours.
+    pub fn conn_le_known(&self) -> bool {
+        self.conn <= self.known_w && self.known_w <= self.willing
     }
 
-    /// `Saturates`: every bin reaches as many peers as it can, up to `K`.
-    pub fn saturates(&self) -> bool {
-        (0..=self.max_bin()).all(|b| self.conn[b] >= self.cand[b].min(self.k))
+    /// `DiscoveryFinds`: discovery finds the whole neighbourhood.
+    pub fn discovery_finds(&self) -> bool {
+        self.known_w == self.willing && self.known_u == self.declining
     }
 
-    /// `NeighbourhoodComplete`: every bin at/beyond depth holds every candidate.
-    pub fn neighbourhood_complete(&self) -> bool {
-        (0..=self.max_bin()).all(|b| !self.in_neighbourhood(b) || self.conn[b] == self.cand[b])
-    }
-
-    /// `Bounded`: a bin below depth holds at most `K` (the working-set bound).
-    pub fn bounded(&self) -> bool {
-        (0..=self.max_bin()).all(|b| self.in_neighbourhood(b) || self.conn[b] <= self.k)
+    /// `SupplyComplete`: the node connects every honest neighbour — the complete,
+    /// redundant supply PullSyncerE consumes.
+    pub fn supply_complete(&self) -> bool {
+        self.conn == self.willing
     }
 }

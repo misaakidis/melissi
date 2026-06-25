@@ -1,15 +1,12 @@
 ----------------------------- MODULE MC_nhood -----------------------------
-\* Neighbourhood, positive: 3 bins, K=2, every bin has 3 reachable candidates
-\* (surplus over K, so the neighbourhood density rule has work to do and shallow
-\* bins have surplus to shed as depth rises). Expect: every bin reaches K, the
-\* neighbourhood (bins >= depth) fully connects, the working set stays <= K below
-\* depth.
-EXTENDS Naturals, FiniteSets, TLC
-MaxBin == 2
-Cand   == 0 :> 3 @@ 1 :> 3 @@ 2 :> 3
-K      == 2
-PrioritizeNbhd == TRUE
-Pruning        == TRUE
-VARIABLES conn
+\* Neighbourhood supply, positive: a tile of 3 honest (willing) neighbours and
+\* one declining peer; bootstrap from one. Expect: discovery finds the whole
+\* tile, and the node connects all 3 honest neighbours (the complete supply).
+EXTENDS Naturals, TLC
+Willing   == 3
+Declining == 1
+Gossip     == TRUE
+ConnectAll == TRUE
+VARIABLES knownW, knownU, conn
 INSTANCE Neighbourhood
 ===========================================================================

@@ -10,7 +10,7 @@ The specs the crates refine, vendored in-tree so melissi is self-contained.
 | `OfferPacing.tla` | `crates/node`, `crates/sim` | advertisements are justified, never a busy loop |
 | `DiscoveryBarrier.tla` | `crates/node` | no-wedge liveness — a withholding peer cannot stall a bin |
 | `WindowedLoad.tla` | `crates/node` | serve-balance under incremental, paged discovery |
-| `Neighbourhood.tla` | `crates/neighbourhood` | the discovery topology — saturate each bin to `K`, densely connect the neighbourhood, shed shallow surplus |
+| `Neighbourhood.tla` | `crates/neighbourhood` | the supply premise: discover and connect the whole honest neighbourhood (gossip-gated), discharging PullSyncerE's "supply assumed" |
 
 `MC_*.{tla,cfg}` are the model-checking instances: the positives and the
 ablations (each ablation breaks exactly one named property).

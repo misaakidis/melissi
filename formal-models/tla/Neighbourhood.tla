@@ -1,131 +1,122 @@
 ----------------------------- MODULE Neighbourhood -----------------------------
-(* Neighbourhood construction — the discovery LOGIC, companion to PullSyncerE in
-   the IntervalSettlement mould: a minimal spec isolating the one emergent
-   property the kademlia layer must hold, so the Rust `neighbourhood` crate can
-   refine it the way `machine` refines the scheduling core.
+(* Neighbourhood supply — the companion that discharges pull-sync's one external
+   premise. PullSyncerE assumes SUPPLY (design §3: "supply assumed" — every
+   reserve chunk is held by some honest neighbour the node can reach). This spec
+   proves a node actually ASSEMBLES that supply: it discovers and connects the
+   honest peers of its neighbourhood. Composing the two closes pull-sync over the
+   discovery layer, the way IntervalSettlement closes it over the resume layer.
 
-   THE SETTING. A node sits at an overlay; every other peer falls in a proximity
-   bin 0..MaxBin by shared-leading-bits with that overlay (bin MaxBin = closest).
-   Discovery (the hive push, verified separately) supplies a fixed pool of
-   reachable CANDIDATES per bin — `Cand[b]`. This module is the policy that turns
-   that pool into a CONNECTED topology: how many peers to hold per bin, and which
-   bins to fill densely. It abstracts the wire entirely; `conn[b]` is just a count.
+   GROUNDED IN THE DECOMPOSITION (§4). The depth-D partition splits the address
+   space into 2^D neighbourhoods whose pull-sync instances are INDEPENDENT
+   (locality lemma: only your depth-D neighbours hold any chunk in your reserve;
+   no cross-neighbourhood serving). So the analysis is ONE neighbourhood — a tile
+   of k in [2,8] peers sharing your depth-D prefix — and the supply for that tile
+   is exactly its honest peers. This module is that one tile; it does not model
+   proximity bins, routing, or the rest of the address space. (Routing across
+   the whole space — the Kademlia k-bucket table and iterative lookup — is a
+   DIFFERENT problem, used by retrieval, not pull-sync; it is deferred to its own
+   formalisation. The neighbourhood is structural locality, not Kademlia routing.)
 
-   THE THEORY (bee `pkg/topology/kademlia`, spec §2.2.1). A bin is SATURATED at K
-   connected peers (bee `SaturationPeers`; spec NHOOD_PEER_COUNT). DEPTH is the
-   shallowest unsaturated bin — capped at MaxBin, since the closest bin is always
-   part of the neighbourhood. The NEIGHBOURHOOD is the bins at or beyond depth:
-   the slice of the address space the node is responsible for, where it must be
-   connected to EVERY reachable peer (redundancy, and the reserve it serves over
-   pull-sync). Shallower bins need only K — enough to route outward.
-
-   So the optimal end-state is: every neighbourhood bin fully connected
-   (`conn[b] = Cand[b]` for `b >= Depth`), every shallower bin trimmed to exactly
-   K. As shallow bins saturate, depth rises, and a bin that was deep (densely
-   filled) becomes shallow — its surplus must be SHED, or the working set grows
-   without bound. That shedding is the prune (bee's HighWaterMark).
+   THE COUPLING THAT MAKES IT NON-TRIVIAL. Discovery and connection depend on each
+   other: a node knows only its bootstrap peer until it CONNECTS, and only a
+   connected node learns more (the hive `peers` push — `net::hive`). The seed
+   breaks the cycle. And not every neighbour connects: peers split into WILLING
+   (honest/reachable — `Willing`) and DECLINING (`Declining`; a real testnet bee
+   declines a light peer). The supply is the willing ones; the node must connect
+   them ALL, not stop at the first — a single connected holder is the single-source
+   dependency §5.1 removes, leaving failover nothing to fail over to.
 
    KNOBS (each a design choice, each ablated):
-     PrioritizeNbhd -- fill neighbourhood bins past K, to every candidate. OFF =
-                       a flat "K per bin everywhere" policy: the neighbourhood is
-                       never densely connected, so the node cannot redundantly
-                       store/serve its slice -> NeighbourhoodComplete fails
-                       (MC_nhood_flat). The deep bins stall at K < Cand[b].
-     Pruning        -- shed a shallow bin's surplus once depth rises past it. OFF
-                       -> a formerly-deep bin keeps its dense fill forever, below
-                       depth: the working set never contracts -> Bounded fails
-                       (MC_nhood_noprune). Saturation and neighbourhood density
-                       still hold — the choice is about resource bound, not reach.
+     Gossip     -- a connected node learns more neighbours (the feedback loop).
+                   OFF -> never learns past the bootstrap peer -> DiscoveryFinds
+                   fails (MC_nhood_nogossip). The connectivity-gated loop is what
+                   discovery IS; there is no oracle pool.
+     ConnectAll -- connect every honest neighbour, not merely enough to bootstrap.
+                   OFF -> the node connects only its seed -> the supply is one
+                   peer, not the neighbourhood -> SupplyComplete fails
+                   (MC_nhood_noconnect): the single-source dependency.
 
-   COMPOSITION. Discovery (hive) proves the candidate pool is authentic (signed
-   bindings). This module proves the policy converges to the optimal topology
-   given that pool. Together: the node ends connected to exactly the right peers.
-
-   OUT OF SCOPE, by design (documented, not modelled): the LowWaterMark depth edge
-   (too few peers -> depth 0); reachability churn (peers dropping is the dual of
-   Cand shrinking — a separate liveness story); and the overlay arithmetic itself
-   (proximity is `overlay::proximity`, pinned by vector, not re-derived here). *)
-EXTENDS Naturals, FiniteSets
+   OUT OF SCOPE, by design: the proximity arithmetic that assigns a peer to this
+   tile (`overlay::proximity`, pinned by vector); peer churn (the dual of the
+   tile shrinking); and Kademlia routing (the deferred companion). *)
+EXTENDS Naturals
 
 CONSTANTS
-  MaxBin,          \* bins are 0..MaxBin ; MaxBin is the closest (always neighbourhood)
-  Cand,            \* [0..MaxBin -> Nat] : reachable candidate peers per bin
-  K,               \* saturation target per bin (NHOOD_PEER_COUNT / SaturationPeers)
-  PrioritizeNbhd,  \* BOOLEAN : fill neighbourhood bins past K (the density rule)
-  Pruning          \* BOOLEAN : shed a shallow bin's surplus once depth passes it
+  Willing,     \* Nat : honest, connectable neighbours in the tile (the supply; k-sized)
+  Declining,   \* Nat : neighbours that are discoverable but decline / are unreachable
+  Gossip,      \* BOOLEAN : a connected node learns more neighbours (the feedback loop)
+  ConnectAll   \* BOOLEAN : connect every honest neighbour, not just enough to bootstrap
 
-Bins == 0..MaxBin
-
-ASSUME MaxBin \in Nat /\ K \in Nat /\ K > 0
-ASSUME Cand \in [Bins -> Nat]
-ASSUME PrioritizeNbhd \in BOOLEAN /\ Pruning \in BOOLEAN
+ASSUME Willing \in Nat /\ Willing >= 1   \* the bootstrap peer is one willing neighbour
+ASSUME Declining \in Nat
+ASSUME Gossip \in BOOLEAN /\ ConnectAll \in BOOLEAN
 
 VARIABLES
-  conn       \* [Bins -> Nat] : peers currently connected in each bin
+  knownW,  \* Nat : willing neighbours DISCOVERED so far (<= Willing)
+  knownU,  \* Nat : declining neighbours discovered (<= Declining) — never connectable
+  conn     \* Nat : willing neighbours CONNECTED (<= knownW) — the assembled supply
 
-vars == <<conn>>
+vars == <<knownW, knownU, conn>>
 
-Saturated(b) == conn[b] >= K
-
-\* Depth: the shallowest unsaturated bin, capped at MaxBin (the closest bin is
-\* always neighbourhood — bee never prunes it). All saturated -> MaxBin.
-Unsaturated == { b \in Bins : ~Saturated(b) }
-Depth ==
-  IF Unsaturated = {} THEN MaxBin
-  ELSE CHOOSE d \in Unsaturated : \A x \in Unsaturated : d <= x
-
-InNeighbourhood(b) == b >= Depth
+\* connected to at least one neighbour: the precondition for learning more (you
+\* must be in the neighbourhood to discover the neighbourhood).
+Bootstrapped == conn > 0
 
 TypeOK ==
-  /\ conn \in [Bins -> Nat]
-  /\ \A b \in Bins : conn[b] <= Cand[b]
+  /\ knownW \in 0..Willing /\ knownU \in 0..Declining /\ conn \in 0..Willing
+  /\ conn <= knownW
 
-Init == conn = [b \in Bins |-> 0]
+Init ==
+  /\ knownW = 1            \* only the bootstrap peer is known
+  /\ knownU = 0
+  /\ conn   = 0
 
-\* Connect one more candidate in bin b. A bin still draws connections while it is
-\* under K (route-saturation, every bin) OR it is in the neighbourhood and the
-\* density rule is on (connect to every close peer).
-Fill(b) ==
-  /\ conn[b] < Cand[b]
-  /\ (conn[b] < K \/ (PrioritizeNbhd /\ InNeighbourhood(b)))
-  /\ conn' = [conn EXCEPT ![b] = @ + 1]
+\* Discovery (the hive push): a connected node learns one more neighbour, willing
+\* or declining. Gated on Gossip AND Bootstrapped — no feedback, or no connection
+\* yet, means nothing past the seed is ever learned.
+DiscoverW ==
+  /\ Gossip /\ Bootstrapped
+  /\ knownW < Willing
+  /\ knownW' = knownW + 1
+  /\ UNCHANGED <<knownU, conn>>
+DiscoverU ==
+  /\ Gossip /\ Bootstrapped
+  /\ knownU < Declining
+  /\ knownU' = knownU + 1
+  /\ UNCHANGED <<knownW, conn>>
 
-\* Shed surplus from a bin that has fallen below depth: it was filled densely as a
-\* neighbourhood bin, depth has since risen past it, so trim back toward K.
-Trim(b) ==
-  /\ Pruning
-  /\ ~InNeighbourhood(b)
-  /\ conn[b] > K
-  /\ conn' = [conn EXCEPT ![b] = @ - 1]
+\* Connect one more known willing neighbour. With ConnectAll, keep connecting the
+\* whole honest neighbourhood; without it, connect only enough to bootstrap (the
+\* first one) and then stop — the single-source policy.
+Connect ==
+  /\ conn < knownW
+  /\ (ConnectAll \/ ~Bootstrapped)
+  /\ conn' = conn + 1
+  /\ UNCHANGED <<knownW, knownU>>
 
-Next == \E b \in Bins : Fill(b) \/ Trim(b)
+Next == DiscoverW \/ DiscoverU \/ Connect
 
-\* The node's own steps are obligated: it keeps dialling candidates and shedding
-\* surplus until the topology settles. Nothing here is adversarial-may.
+\* The node's own steps are obligated: it keeps learning and dialling until the
+\* neighbourhood is assembled. Nothing here is adversarial-may.
 Fairness ==
-  /\ \A b \in Bins : WF_vars(Fill(b))
-  /\ \A b \in Bins : WF_vars(Trim(b))
+  /\ WF_vars(DiscoverW)
+  /\ WF_vars(DiscoverU)
+  /\ WF_vars(Connect)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
 -----------------------------------------------------------------------------
 \* --- safety ---
-\* never claim more peers than exist in a bin (a connection needs a candidate).
-ConnLeCand == \A b \in Bins : conn[b] <= Cand[b]
+\* never connect a neighbour that was not discovered-and-willing.
+ConnLeKnown == conn <= knownW /\ knownW <= Willing
 
 \* --- liveness ---
-\* every bin reaches as many peers as it can, up to K — the node is well-routed.
-Saturates ==
-  <>[](\A b \in Bins : conn[b] >= IF Cand[b] < K THEN Cand[b] ELSE K)
+\* discovery finds the whole neighbourhood — every willing and declining peer —
+\* once the node has bootstrapped. The property the feedback loop earns.
+DiscoveryFinds == <>[](knownW = Willing /\ knownU = Declining)
 
-\* the neighbourhood is DENSE: every bin at/beyond depth holds every reachable
-\* peer. This is the property the reserve/serving depends on, and the one the
-\* flat "K everywhere" policy cannot reach.
-NeighbourhoodComplete ==
-  <>[](\A b \in Bins : InNeighbourhood(b) => conn[b] = Cand[b])
-
-\* the working set stays bounded: a bin below depth holds at most K. As depth
-\* rises, formerly-dense bins must be shed back — without the prune they aren't.
-Bounded ==
-  <>[](\A b \in Bins : ~InNeighbourhood(b) => conn[b] <= K)
+\* the supply is COMPLETE: the node connects every honest neighbour, so every
+\* reserve chunk an honest neighbour holds has a connected holder — exactly the
+\* premise PullSyncerE assumes, and the redundancy §5.1's failover needs.
+SupplyComplete == <>[](conn = Willing)
 =============================================================================
