@@ -50,6 +50,15 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// The peer this op targets — the shell routes it to that peer's connection.
+    pub fn peer(&self) -> PeerId {
+        match self {
+            Op::Cursors { peer } | Op::Offer { peer, .. } | Op::Fetch { peer, .. } => *peer,
+        }
+    }
+}
+
 /// Drives a [`Node`] over a connection. Owns the node; sequences its effects
 /// into [`Op`]s; feeds wire results back as events.
 pub struct Session {

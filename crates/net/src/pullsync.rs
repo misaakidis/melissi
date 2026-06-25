@@ -67,7 +67,7 @@ async fn open(ctrl: &mut Control, peer: PeerId, proto: StreamProtocol) -> Option
 
 /// Run one [`Op`] against `peer` over libp2p, returning the event to feed back
 /// (or `None` if the stream could not be opened/driven).
-async fn run_op<C: TripleCodec>(
+pub(crate) async fn run_op<C: TripleCodec>(
     ctrl: &mut Control,
     peer: PeerId,
     op: Op,
