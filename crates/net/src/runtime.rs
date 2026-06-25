@@ -195,6 +195,106 @@ pub async fn assemble_and_pull<C: TripleCodec>(
     }
 }
 
+/// Drive a libp2p swarm: poll its events (so connections + incoming streams make
+/// progress) and dial addresses sent on `dials`. Run on its own task; the
+/// `Control` taken from the swarm beforehand opens streams against it.
+async fn drive_swarm(
+    mut sw: libp2p::Swarm<libp2p_stream::Behaviour>,
+    mut dials: tokio::sync::mpsc::UnboundedReceiver<libp2p::Multiaddr>,
+) {
+    use libp2p::futures::StreamExt;
+    loop {
+        tokio::select! {
+            _ = sw.select_next_some() => {}
+            addr = dials.recv() => match addr {
+                Some(a) => { let _ = sw.dial(a); }
+                None => break,
+            }
+        }
+    }
+}
+
+fn peer_of(addr: &libp2p::Multiaddr) -> Option<PeerId> {
+    addr.iter().find_map(|p| match p {
+        libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+        _ => None,
+    })
+}
+
+/// Our network identity + the tile that defines our reserve — what a [`run`]
+/// presents to peers and uses to select neighbours.
+pub struct Identity<'a> {
+    pub bzz: &'a BzzAddress,
+    pub network_id: u64,
+    pub full_node: bool,
+    pub neighbourhood: &'a Neighbourhood,
+}
+
+/// The whole node, end to end — the operational `Composition`, threaded: dial the
+/// bootnode and handshake it, receive its hive push and SELECT the neighbours
+/// (our tile), dial + handshake each, then `assemble_and_pull` to fill the
+/// reserve. The caller owns the clock (bound this in a timeout); it returns when
+/// the puller quiesces or no neighbour is reachable. `bootnode` carries a `/p2p/`.
+pub async fn run<C: TripleCodec>(
+    swarm: libp2p::Swarm<libp2p_stream::Behaviour>,
+    bootnode: libp2p::Multiaddr,
+    id: &Identity<'_>,
+    session: &mut Session,
+    codec: &C,
+) {
+    let (mine, network_id, full_node, nbhd) =
+        (id.bzz, id.network_id, id.full_node, id.neighbourhood);
+    let mut ctrl = swarm.behaviour().new_control();
+    let Some(boot_peer) = peer_of(&bootnode) else {
+        return;
+    };
+    let (dial_tx, dial_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _ = dial_tx.send(bootnode.clone());
+    tokio::spawn(drive_swarm(swarm, dial_rx));
+
+    // 1. handshake the bootnode (bee serves discovery only to handshaked peers).
+    if handshake_neighbour(
+        &mut ctrl,
+        boot_peer,
+        mine,
+        network_id,
+        full_node,
+        bootnode.to_vec(),
+    )
+    .await
+    .is_none()
+    {
+        return;
+    }
+    // 2. receive its hive push and keep the neighbours in our tile.
+    let neighbours = accept_hive_push(&mut ctrl, network_id, nbhd).await;
+    // 3. dial + handshake each neighbour; the connected ones are the supply.
+    let mut connected: Vec<(NodePeerId, PeerId)> = Vec::new();
+    let mut next: NodePeerId = 1;
+    for n in &neighbours {
+        let Ok(addr) = libp2p::Multiaddr::try_from(n.peer.underlay.clone()) else {
+            continue;
+        };
+        let _ = dial_tx.send(addr.clone());
+        if handshake_neighbour(
+            &mut ctrl,
+            n.libp2p,
+            mine,
+            network_id,
+            full_node,
+            addr.to_vec(),
+        )
+        .await
+        .is_some()
+        {
+            connected.push((next, n.libp2p));
+            next += 1;
+        }
+    }
+    // 4. pull the reserve from the assembled neighbourhood.
+    assemble_and_pull(&mut ctrl, &connected, session, codec).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +584,102 @@ mod tests {
         assert_eq!(got.len(), 1, "only the near peer is a neighbour");
         assert_eq!(got[0].peer.overlay, near);
         assert!(got[0].proximity >= 1);
+    }
+
+    /// Live reality check: handshake the testnet bootnode, then wait for its hive
+    /// `peers` push and report what a **random-overlay** light peer is given —
+    /// how many peers, their proximity to us, and how many land in our tile.
+    /// `#[ignore]`d (network + external peer). Run:
+    ///
+    /// ```text
+    /// cargo test -p melissi-net --features libp2p live_testnet_discovery -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn live_testnet_discovery() {
+        const TESTNET: u64 = 10;
+        let addr: Multiaddr =
+            "/ip4/49.12.172.37/tcp/32490/p2p/QmZsYCbkUXWpfR34PmUwMJvHwJtGfbcMMoAp1G2EydkpRA"
+                .parse()
+                .unwrap();
+        let boot = peer_of(&addr).unwrap();
+
+        let secret = [0x5au8; 32];
+        let our_underlay = "/ip4/127.0.0.1/tcp/1634"
+            .parse::<Multiaddr>()
+            .unwrap()
+            .to_vec();
+        let mine = BzzAddress::new(
+            &secret,
+            &our_underlay,
+            TESTNET,
+            [0x11; 32],
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+        let eth = melissi_crypto::public_eth_address(&secret).unwrap();
+        let our_overlay = overlay_address(&eth, TESTNET, &[0x11; 32]);
+        let radius: u8 = 8; // a representative reserve depth for the probe
+
+        let mut sw = node();
+        let mut ctrl = sw.behaviour().new_control();
+        let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
+        sw.dial(addr.clone()).unwrap();
+        tokio::spawn(async move {
+            loop {
+                sw.select_next_some().await;
+            }
+        });
+
+        let out = tokio::time::timeout(Duration::from_secs(30), async move {
+            let mut hs = loop {
+                match ctrl.open_stream(boot, HANDSHAKE_PROTOCOL).await {
+                    Ok(s) => break s,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                }
+            };
+            let id = run_handshake(
+                &mut hs,
+                Role::Initiator,
+                &mine,
+                TESTNET,
+                false,
+                addr.to_vec(),
+            )
+            .await
+            .expect("handshake verified");
+            let hx: String = id.iter().map(|b| format!("{b:02x}")).collect();
+            eprintln!("✓ handshake with testnet bee 0x{hx}; awaiting hive push…");
+            // wait for bee to gossip its peers to us
+            let (_p, mut stream) = hive_in.next().await?;
+            Some(receive_peers(&mut stream, TESTNET).await)
+        })
+        .await;
+
+        match out {
+            Ok(Some(peers)) => {
+                let proximities: Vec<u8> = peers
+                    .iter()
+                    .map(|p| melissi_overlay::proximity(&our_overlay, &p.overlay))
+                    .collect();
+                let in_tile = proximities.iter().filter(|&&po| po >= radius).count();
+                eprintln!(
+                    "✓ hive push: {} peers; proximities {:?}; {} in our tile (radius {})",
+                    peers.len(),
+                    proximities,
+                    in_tile,
+                    radius,
+                );
+                eprintln!(
+                    "(a random overlay rarely shares a deep prefix with sparse testnet nodes — \
+                     expect few/no neighbours; a real pull needs an overlay placed in a populated tile)"
+                );
+            }
+            Ok(None) => eprintln!("· bee admitted the handshake but sent no hive push this run"),
+            Err(_) => {
+                eprintln!("· no hive push within 30s (bee declined to gossip to a light peer)")
+            }
+        }
     }
 }

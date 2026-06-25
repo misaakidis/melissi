@@ -32,5 +32,5 @@ melissi-machine = { path = "../machine", optional = true }
 # dns: resolve the `/dnsaddr/testnet.ethswarm.org` bootnode chain at dial time.
 libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "ecdsa", "secp256k1", "ed25519"], optional = true }
 libp2p-stream = { version = "0.4.0-alpha", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
