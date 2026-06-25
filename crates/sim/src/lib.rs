@@ -30,6 +30,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const NBINS: u8 = 2;
 pub const RADIUS: Bin = 1;
+/// Offers are PAGED, as bee's `pkg/pullsync` pages them: one Offer covers a
+/// bounded window `[start, Topmost]`, not the whole bin. A peer reveals its
+/// holdings a page at a time as the puller advances — so the choice set
+/// assembles per page (all peers offer the same page concurrently), and the
+/// grab a late scheduler can make is bounded to ONE page, not the backlog.
+pub const PAGE: usize = 4;
 
 /// Which bin a triple lives in — a stand-in for proximity order, derived
 /// deterministically from the address (a low byte stands for the leading-bit
@@ -76,11 +82,31 @@ pub struct Sim {
     /// Spurious-miss budget: an honest fetch outcome turned `Missed`,
     /// rng-placed (the misattributed-timeout reality, `TimeoutBudget`).
     pub spurious_budget: u32,
+    /// All-together (concurrent) discovery: the honest cursor/offer handshake is
+    /// prompt — fired to every holder at once, answered within a round-trip — so
+    /// the choice set assembles before deliveries dominate and least-loaded
+    /// routing balances (design §5.3, §5.6). The adversary still reorders
+    /// DELIVERIES freely (the floor must survive that); it does not get to defer
+    /// the honest discovery handshake across the whole sync. [`Sim::staggered`]
+    /// drops this — the worst case a discovery barrier, or a tight window,
+    /// otherwise has to cover.
+    concurrent_discovery: bool,
     steps: u64,
 }
 
 fn peer_id(i: usize) -> PeerId {
     i as PeerId
+}
+
+/// The cursor/offer handshake messages — discovery, as opposed to delivery
+/// (`Fetch`/`FetchResult`). Under concurrent discovery these are answered first.
+fn is_discovery(m: &Msg) -> bool {
+    match m {
+        Msg::Req { eff, .. } => matches!(eff, Effect::GetCursors(_) | Effect::Offer { .. }),
+        Msg::Resp { ev, .. } => {
+            matches!(ev, Event::CursorsResult { .. } | Event::OfferResult { .. })
+        }
+    }
 }
 
 fn splitmix(s: &mut u64) -> u64 {
@@ -115,8 +141,19 @@ impl Sim {
             rng: seed ^ 0xD1B5_4A32_D192_ED03,
             served: vec![0; k],
             spurious_budget: 0,
+            concurrent_discovery: true,
             steps: 0,
         }
+    }
+
+    /// Drop concurrent discovery: let the adversary defer the cursor/offer
+    /// handshake too, so the choice set assembles staggered. The
+    /// fairness ablations use this to show what all-together offers (or, on the
+    /// old design, the discovery barrier) otherwise cover — and that a tight
+    /// [`Policy::window`] bounds the resulting skew.
+    pub fn staggered(mut self) -> Self {
+        self.concurrent_discovery = false;
+        self
     }
 
     /// Seed an initial holding: in the reserve (served) AND preloaded in the
@@ -198,20 +235,29 @@ impl Sim {
     }
 
     /// Offer completeness — the spec's named serving-side obligation: every
-    /// entry held in `[start, head]` is in the response.
+    /// entry held in `[start, Topmost]` is in the response. PAGED, as bee pages:
+    /// at most [`PAGE`] entries, `Topmost` the last BinID in the page (the puller
+    /// advances to the next page itself). The choice set therefore assembles a
+    /// page at a time, all peers on the same page ~concurrently.
     fn offer_response(&self, j: usize, bin: Bin, start: BinId) -> Event {
-        let head = self.nodes[j].head(bin);
         let refs: Vec<(BinId, Triple)> = self.nodes[j]
             .reserve
             .get(&bin)
-            .map(|m| m.range(start..).map(|(&b, &c)| (b, c)).collect())
+            .map(|m| m.range(start..).take(PAGE).map(|(&b, &c)| (b, c)).collect())
             .unwrap_or_default();
+        // Topmost covers exactly this page — a higher head means the puller will
+        // re-offer the next tail (bee's sliding window).
+        let topmost = refs
+            .last()
+            .map(|&(b, _)| b)
+            .unwrap_or(start.saturating_sub(1))
+            .max(start);
         Event::OfferResult {
             peer: peer_id(j),
             bin,
             start,
             refs,
-            topmost: head.max(start),
+            topmost,
         }
     }
 
@@ -222,7 +268,23 @@ impl Sim {
         }
         self.steps += 1;
         assert!(self.steps < 2_000_000, "simulation did not quiesce");
-        let idx = (splitmix(&mut self.rng) % self.queue.len() as u64) as usize;
+        // Concurrent discovery: answer the honest handshake promptly (prefer
+        // discovery messages when any are in flight), so offers arrive
+        // all-together and the choice set assembles before deliveries dominate.
+        // Deliveries stay adversarially ordered among themselves.
+        let pool: Vec<usize> = if self.concurrent_discovery {
+            let disc: Vec<usize> = (0..self.queue.len())
+                .filter(|&i| is_discovery(&self.queue[i]))
+                .collect();
+            if disc.is_empty() {
+                (0..self.queue.len()).collect()
+            } else {
+                disc
+            }
+        } else {
+            (0..self.queue.len()).collect()
+        };
+        let idx = pool[(splitmix(&mut self.rng) % pool.len() as u64) as usize];
         let msg = self.queue.swap_remove(idx);
         match msg {
             Msg::Req { from, eff } => match eff {

@@ -102,27 +102,35 @@ pub enum Effect {
     },
 }
 
-/// The floor-achieving policy knobs (design §5.3, §5.6). Provably correctness-
-/// neutral — they only choose among already-enabled `Want`s — so unlike the
-/// machine's `Config` they break no safety/liveness property. They exist so
-/// the sim can *ablate* them and measure the O5 fairness floor breaking, the
-/// way the gate-critical mechanisms are ablated in TLA. Ship [`Policy::SHIPPED`].
+/// The floor-achieving policy knobs (design §5.3). Provably correctness-neutral
+/// — they only choose among already-enabled `Want`s and bound how many are taken
+/// per round — so unlike the machine's `Config` they break no safety/liveness
+/// property. They exist so the sim can *ablate* them and measure the O5 fairness
+/// floor breaking, the way the gate-critical mechanisms are ablated in TLA. Ship
+/// [`Policy::SHIPPED`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     /// Route on cumulative realised assignments (true) vs outstanding load
     /// only (false). Outstanding-only is history-blind: balanced within a
     /// scheduling wave, skewed across waves — the `[6,6,12]` ablation.
     pub cumulative_routing: bool,
-    /// Wait for the choice set to assemble before routing a bin (true), vs
-    /// schedule eagerly off whoever answered first (false) — which hands the
-    /// whole backlog to the first peer through discovery.
-    pub discovery_barrier: bool,
+    /// The puller's want-cap per scheduling round. The REAL window is bee's
+    /// server-side Offer PAGE: `pkg/pullsync` reveals a peer's holdings a bounded
+    /// page at a time (it does NOT advertise the whole bin up front), and melissi
+    /// rides that — wanting the whole offered page — so this caps at the page and
+    /// ships large. Paging is what bounds balance WITHOUT a barrier: all peers
+    /// offer the same page ~concurrently, so the choice set assembles per page and
+    /// least-loaded + cumulative routing distribute the pages across holders —
+    /// skew ≤ a few pages, vanishing as `M ≫ k·page` (design §5.3), no wedge. A cap
+    /// below the page only sub-paginates (chattier, marginally tighter); the design
+    /// wants the whole page. Must be ≥ 1.
+    pub window: usize,
 }
 
 impl Policy {
     pub const SHIPPED: Policy = Policy {
         cumulative_routing: true,
-        discovery_barrier: true,
+        window: 256,
     };
 }
 
@@ -150,8 +158,7 @@ pub struct Node {
     /// balances within a wave but skews across waves (deeper bins schedule
     /// first). Outstanding load (`m.load`) stays as the tiebreak.
     assigned: BTreeMap<PeerId, u64>,
-    /// The discovery barrier (design §5.6): the choice set assembles before
-    /// routing chooses, else the first peer answered hands the whole backlog.
+    /// The open-offer discipline: one standing offer per (peer, bin).
     disc: Discovery,
 }
 
@@ -210,7 +217,6 @@ impl Node {
             }
 
             Event::CursorsResult { peer, cursors } => {
-                self.disc.mark_cursored(peer);
                 let mut fx = Vec::new();
                 for (bin, head) in cursors {
                     if bin < self.radius {
@@ -218,11 +224,6 @@ impl Node {
                     }
                     self.cursors.insert((peer, bin), head);
                     let log = self.logs.entry((peer, bin)).or_default();
-                    if head < log.next() {
-                        // nothing in the HIST range: resolved without an
-                        // answer (the standing offer is the LIVE tail)
-                        self.disc.resolve(peer, bin);
-                    }
                     if self.disc.try_open(peer, bin) {
                         fx.push(Effect::Offer {
                             peer,
@@ -242,7 +243,6 @@ impl Node {
                 topmost,
             } => {
                 self.disc.close(peer, bin);
-                self.disc.resolve(peer, bin);
                 let cursor = self.cursors.get(&(peer, bin)).copied().unwrap_or(0);
                 let log = self.logs.entry((peer, bin)).or_default();
                 // An answer covers at least what was asked: a hostile
@@ -391,21 +391,23 @@ impl Node {
         //    as the deterministic tiebreak. Policy only picks among ENABLED
         //    wants, so it can break nothing (provably-neutral).
         let mut batches: BTreeMap<(PeerId, Bin), Vec<Triple>> = BTreeMap::new();
+        // Per-(peer, bin) commitments this round — the window cap. Bounding how
+        // much one peer is handed before the least-loaded is re-picked is what
+        // keeps commit-on-offer balanced WITHOUT a discovery barrier: no wait for
+        // the choice set (so no peer can wedge a bin by withholding), yet
+        // least-loaded over a unit window is optimal makespan (WindowedLoad.tla,
+        // design §5.3). The shell's round cadence spreads the rest; a large
+        // window is the greedy ablation.
+        let mut committed: BTreeMap<(PeerId, Bin), usize> = BTreeMap::new();
         loop {
-            // the discovery barrier: route only within bins whose choice set
-            // is assembled — every peer for the bin answered (or had nothing)
+            // Only wants whose (peer, bin) still has window budget this round.
             let enabled: Vec<(Triple, PeerId)> = self
                 .m
                 .enabled_wants()
                 .into_iter()
-                .filter(|(c, _)| {
-                    if !self.policy.discovery_barrier {
-                        return true; // ablation: schedule before the choice set assembles
-                    }
+                .filter(|(c, p)| {
                     let bin = self.bin_of.get(c).copied().unwrap_or(0);
-                    self.disc.bin_ready(bin, self.peers.iter().copied(), |p| {
-                        self.cursors.contains_key(&(p, bin))
-                    })
+                    committed.get(&(*p, bin)).copied().unwrap_or(0) < self.policy.window
                 })
                 .collect();
             if enabled.is_empty() {
@@ -434,13 +436,12 @@ impl Node {
                     (realised, self.m.load(p), p)
                 })
                 .unwrap();
+            let bin = self.bin_of.get(&c).copied().unwrap_or(0);
             let ok = self.m.want(c, p);
             debug_assert!(ok, "policy chose a disabled want");
             *self.assigned.entry(p).or_default() += 1;
-            batches
-                .entry((p, self.bin_of.get(&c).copied().unwrap_or(0)))
-                .or_default()
-                .push(c);
+            *committed.entry((p, bin)).or_default() += 1;
+            batches.entry((p, bin)).or_default().push(c);
         }
         for ((peer, bin), want) in batches {
             fx.push(Effect::Fetch { peer, bin, want });
