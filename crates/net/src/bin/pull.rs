@@ -38,12 +38,12 @@ use std::time::Duration;
 
 use libp2p::Multiaddr;
 use melissi_machine::Config;
-use melissi_net::runtime::{grind_overlay_nonce, learn_peer_overlay, run, Identity};
+use melissi_net::runtime::{grind_overlay_nonce, learn_peer_overlay, pull_direct, run, Identity};
 use melissi_net::swarm::build_swarm_with_key;
 use melissi_net::{dnsaddr, BzzAddress};
 use melissi_node::Node;
 use melissi_overlay::{overlay_address, Neighbourhood};
-use melissi_wire::codec::MintedCodec;
+use melissi_wire::codec::{MintedCodec, PullCodec};
 use melissi_wire::session::Session;
 
 #[tokio::main]
@@ -88,6 +88,46 @@ async fn main() {
         "· network {network_id}, overlay key 0x{}…, advertising {underlay}",
         hex8(&eth)
     );
+
+    // DIRECT mode: pull straight from a known peer (MELISSI_BOOTNODE, e.g. a local
+    // bee), skipping discovery/grind/reachability — we already have the peer, and
+    // the connection we open is the supply. PullCodec validates real foreign-owned
+    // chunks. Set MELISSI_RADIUS=0 to pull the peer's whole reserve.
+    if env_u64("MELISSI_DIRECT", 0) != 0 {
+        eprintln!("· DIRECT pull from {bootnode} (no discovery)…");
+        let mine = BzzAddress::new(
+            &secret,
+            &underlay.to_vec(),
+            network_id,
+            [0x11; 32],
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+        let swarm = build_swarm_with_key(key);
+        let mut session = Session::new(Node::new(Config::PRODUCTION, radius));
+        let codec = PullCodec;
+        let _ = tokio::time::timeout(
+            timeout,
+            pull_direct(
+                swarm,
+                bootnode,
+                &mine,
+                network_id,
+                full_node,
+                &mut session,
+                &codec,
+            ),
+        )
+        .await;
+        let node = session.node();
+        eprintln!(
+            "── DIRECT result: {} chunks delivered, deficit {}",
+            node.deliveries(),
+            node.deficit()
+        );
+        return;
+    }
     eprintln!("· bootnode {bootnode}");
 
     // 1. learn the bootnode's overlay, grind ours into its neighbourhood.

@@ -489,6 +489,50 @@ pub async fn run<C: TripleCodec>(
     assemble_and_pull(&mut ctrl, &connected, session, codec).await;
 }
 
+/// Pull directly from a single **known** peer — no discovery. Dial it, handshake,
+/// and drive the `Session` against it as the sole supply. For pulling a specific
+/// node's reserve (e.g. a local bee whose address we already have), where the
+/// neighbourhood is a single chosen peer rather than a gossiped tile. Returns
+/// when the puller quiesces (the reserve filled from what that peer holds).
+pub async fn pull_direct<C: TripleCodec>(
+    swarm: libp2p::Swarm<libp2p_stream::Behaviour>,
+    peer_addr: libp2p::Multiaddr,
+    mine: &BzzAddress,
+    network_id: u64,
+    full_node: bool,
+    session: &mut Session,
+    codec: &C,
+) {
+    let mut ctrl = swarm.behaviour().new_control();
+    let Some(peer) = peer_of(&peer_addr) else {
+        return;
+    };
+    let (dial_tx, dial_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _ = dial_tx.send(peer_addr.clone());
+    let addrs: PeerAddrs = Default::default();
+    tokio::spawn(drive_swarm(swarm, dial_rx, addrs.clone()));
+    if handshake_neighbour(
+        &mut ctrl,
+        peer,
+        mine,
+        network_id,
+        full_node,
+        peer_addr.to_vec(),
+    )
+    .await
+    .is_none()
+    {
+        if logging() {
+            eprintln!("  ✗ direct handshake failed");
+        }
+        return;
+    }
+    if logging() {
+        eprintln!("  ✓ handshaked the peer directly; pulling its reserve…");
+    }
+    assemble_and_pull(&mut ctrl, &[(1, peer)], session, codec).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

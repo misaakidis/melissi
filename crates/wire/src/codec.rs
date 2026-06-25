@@ -138,9 +138,92 @@ impl TripleCodec for MintedCodec {
     }
 }
 
+/// A read-only codec for **pulling** real network chunks: it never mints or
+/// serves, only validates deliveries from the bytes alone — BMT content address
+/// + a self-consistent recovered stamp owner. Unlike [`MintedCodec`] it matches
+/// no fixed owner: a pulled chunk's batch owner is whoever stamped it, so a valid
+/// (recoverable) signature over the address is the self-verification we can do
+/// from bytes. This is what lets melissi accept arbitrary chunks pulled from a
+/// real bee reserve (whose stamps are signed by foreign batch owners).
+#[derive(Default)]
+pub struct PullCodec;
+
+impl TripleCodec for PullCodec {
+    fn address(&self, c: Triple) -> Vec<u8> {
+        c.address.to_vec()
+    }
+    fn batch_id(&self, c: Triple) -> Vec<u8> {
+        c.batch_id.to_vec()
+    }
+    fn stamp_hash(&self, c: Triple) -> Vec<u8> {
+        c.stamp_hash.to_vec()
+    }
+    // A puller never serves, so it holds no payloads/stamps.
+    fn stamp(&self, _c: Triple) -> Vec<u8> {
+        Vec::new()
+    }
+    fn data(&self, _c: Triple) -> Vec<u8> {
+        Vec::new()
+    }
+    fn triple_of(&self, address: &[u8], batch_id: &[u8], stamp_hash: &[u8]) -> Option<Triple> {
+        if address.len() != 32 || batch_id.len() != 32 || stamp_hash.len() != 32 {
+            return None;
+        }
+        Some(Triple::new(
+            to_arr(address),
+            to_arr(batch_id),
+            to_arr(stamp_hash),
+        ))
+    }
+    fn triple_of_delivery(&self, d: &pb::Delivery) -> Option<Triple> {
+        if d.address.len() != 32 || d.stamp.len() != postage::STAMP_SIZE {
+            return None;
+        }
+        let stamp = postage::Stamp::parse(&d.stamp)?;
+        Some(Triple::new(
+            to_arr(&d.address),
+            to_arr(stamp.batch_id()),
+            bmt::keccak(&d.stamp),
+        ))
+    }
+    fn validate(&self, c: Triple, d: &pb::Delivery) -> Outcome {
+        // 1. content self-verification: bytes must BMT-hash to the address.
+        if bmt::chunk_address(&d.data).to_vec() != c.address.to_vec() {
+            return Outcome::Missed; // peer-fault: garbage / wrong chunk
+        }
+        // 2. payment self-verification: the stamp must recover *a* valid owner
+        //    for this address (well-formed signature), no fixed owner to match.
+        match postage::Stamp::parse(&d.stamp) {
+            Some(st) if postage::recover_owner(&c.address, &st).is_some() => Outcome::Delivered,
+            _ => Outcome::Rejected, // entry-fault: malformed / unrecoverable stamp
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pull_codec_validates_foreign_owned_chunk() {
+        // a chunk minted by SOME batch owner (not ours)…
+        let mut minter = MintedCodec::new([3u8; 32], 5);
+        let triple = minter.mint(b"a chunk from a foreign batch", 0, 0);
+        let delivery = pb::Delivery {
+            address: minter.address(triple),
+            data: minter.data(triple),
+            stamp: minter.stamp(triple),
+        };
+        // …validates under PullCodec, which matches no fixed owner (only that the
+        // stamp recovers a valid owner for the address).
+        assert_eq!(PullCodec.validate(triple, &delivery), Outcome::Delivered);
+        // tampered bytes → Missed (content self-check from the bytes alone).
+        let bad = pb::Delivery {
+            data: b"tampered".to_vec(),
+            ..delivery
+        };
+        assert_eq!(PullCodec.validate(triple, &bad), Outcome::Missed);
+    }
 
     #[test]
     fn minted_chunk_is_content_addressed_and_validates() {
