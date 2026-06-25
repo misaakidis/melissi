@@ -40,6 +40,8 @@ pub mod pullsync;
 #[cfg(feature = "libp2p")]
 pub mod runtime;
 #[cfg(feature = "libp2p")]
+pub mod swarm;
+#[cfg(feature = "libp2p")]
 pub mod transport;
 
 use melissi_crypto as crypto;

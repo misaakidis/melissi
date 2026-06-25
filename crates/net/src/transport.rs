@@ -109,19 +109,7 @@ mod tests {
     const OBSERVED: &[u8] = &[0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62];
 
     fn node() -> Swarm<libp2p_stream::Behaviour> {
-        libp2p::SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                libp2p::tcp::Config::default(),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )
-            .unwrap()
-            .with_dns()
-            .unwrap()
-            .with_behaviour(|_| libp2p_stream::Behaviour::new())
-            .unwrap()
-            .build()
+        crate::swarm::build_swarm()
     }
 
     fn bzz(secret: &[u8; 32], nonce: u8) -> BzzAddress {

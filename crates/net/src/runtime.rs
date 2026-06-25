@@ -435,17 +435,7 @@ mod tests {
     }
 
     fn node() -> Swarm<libp2p_stream::Behaviour> {
-        libp2p::SwarmBuilder::with_new_identity()
-            .with_tokio()
-            .with_tcp(
-                libp2p::tcp::Config::default(),
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )
-            .unwrap()
-            .with_behaviour(|_| libp2p_stream::Behaviour::new())
-            .unwrap()
-            .build()
+        crate::swarm::build_swarm()
     }
 
     #[derive(Default)]

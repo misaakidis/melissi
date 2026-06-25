@@ -13,6 +13,9 @@ default = []
 # also pulls `wire` (the pull-sync pollers + `Session`) since the pull-sync
 # shell runs over the same libp2p streams.
 libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures", "dep:hickory-resolver", "dep:melissi-wire", "dep:melissi-node", "dep:melissi-settlement", "dep:melissi-machine"]
+# A WebSocket-Secure transport leg alongside TCP (`swarm::build_swarm_wss`). The
+# stream protocols above the connection are unchanged — see `swarm`.
+wss = ["libp2p", "libp2p/websocket"]
 
 [dependencies]
 melissi-types = { path = "../types" }
