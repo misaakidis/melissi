@@ -217,10 +217,45 @@ pub async fn assemble_and_pull<C: TripleCodec>(
             .iter()
             .find(|(m, _)| *m == op.peer())
             .map(|(_, p)| *p);
+        if logging() {
+            match &op {
+                Op::Cursors { .. } => eprintln!("  → cursors"),
+                Op::Offer { bin, .. } => eprintln!("  → offer bin {bin}"),
+                Op::Fetch { bin, want, .. } => {
+                    eprintln!("  → fetch bin {bin} ({} want)", want.len())
+                }
+            }
+        }
         let result = match target {
             Some(p) => crate::pullsync::run_op(ctrl, p, op.clone(), codec).await,
             None => None,
         };
+        if logging() && result.is_none() {
+            eprintln!("  ✗ op returned None (stream open/exchange failed)");
+        }
+        if logging() {
+            match &result {
+                Some(Event::CursorsResult { cursors, .. }) => eprintln!(
+                    "  ← cursors: {} bins, {} non-empty",
+                    cursors.len(),
+                    cursors.iter().filter(|(_, h)| *h > 0).count()
+                ),
+                Some(Event::OfferResult { bin, refs, .. }) => {
+                    if !refs.is_empty() {
+                        eprintln!("  ← offer bin {bin}: {} refs", refs.len());
+                    }
+                }
+                Some(Event::FetchResult { outcomes, .. }) => eprintln!(
+                    "  ← fetch: {} outcomes ({} delivered)",
+                    outcomes.len(),
+                    outcomes
+                        .iter()
+                        .filter(|(_, o)| matches!(o, Outcome::Delivered))
+                        .count()
+                ),
+                _ => {}
+            }
+        }
         match result {
             Some(ev) => session.feed(ev),
             // a failed op. An Offer that found an empty range BLOCKS (the standing

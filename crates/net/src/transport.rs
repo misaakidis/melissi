@@ -114,7 +114,17 @@ where
                 }
                 input.extend_from_slice(&chunk[..n]);
             }
-            HsOut::Done(eth) => return Some(eth),
+            HsOut::Done(eth) => {
+                // Half-close our side so the peer's *graceful* stream close
+                // completes. bee finishes the handshake then calls FullClose()
+                // (close write, await our FIN); if we never close, that errors
+                // and bee logs "unable to handshake" and DISCONNECTS us right
+                // after a successful handshake — the root cause of every reset
+                // (no gossip, no serve) we saw. Best-effort: a peer that already
+                // closed makes this a benign no-op.
+                let _ = stream.close().await;
+                return Some(eth);
+            }
             HsOut::Failed => return None,
         }
     }

@@ -95,11 +95,29 @@ async fn main() {
     // chunks. Set MELISSI_RADIUS=0 to pull the peer's whole reserve.
     if env_u64("MELISSI_DIRECT", 0) != 0 {
         eprintln!("· DIRECT pull from {bootnode} (no discovery)…");
+        // Mine our overlay into the peer's neighbourhood, so the peer's reserve
+        // IS our tile — otherwise our Node wants chunks near OUR overlay, of which
+        // the peer's reserve (near ITS overlay) holds none.
+        let probe = BzzAddress::new(
+            &secret,
+            &underlay.to_vec(),
+            network_id,
+            [0u8; 32],
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+        let peer_overlay = learn_peer_overlay(bootnode.clone(), &probe, network_id, full_node)
+            .await
+            .expect("could not learn the peer's overlay");
+        let (nonce, po) =
+            grind_overlay_nonce(&eth, network_id, &peer_overlay, grind_bits, 50_000_000);
+        eprintln!("· ground our overlay to proximity {po} of the peer (target {grind_bits})");
         let mine = BzzAddress::new(
             &secret,
             &underlay.to_vec(),
             network_id,
-            [0x11; 32],
+            nonce,
             1_700_000_000,
             [0u8; 20],
         )

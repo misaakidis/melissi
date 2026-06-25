@@ -75,10 +75,18 @@ pub(crate) async fn run_op<C: TripleCodec>(
 ) -> Option<Event> {
     match op {
         Op::Cursors { peer: pid } => {
-            let mut s = open(ctrl, peer, CURSORS_PROTOCOL).await?;
+            let Some(mut s) = open(ctrl, peer, CURSORS_PROTOCOL).await else {
+                if std::env::var("MELISSI_LOG").is_ok() {
+                    eprintln!("  ✗ could not OPEN cursors stream (connection dropped?)");
+                }
+                return None;
+            };
             let mut client = CursorsClient::new();
-            let term = pump(&mut s, |inp| client.poll(inp)).await?;
-            match term {
+            let term = pump(&mut s, |inp| client.poll(inp)).await;
+            // Half-close so bee's cursorHandler FullClose() completes (else it
+            // Resets and the next op sees a dead stream) — the handshake lesson.
+            let _ = s.close().await;
+            match term? {
                 ClientOut::Cursors { cursors, .. } => {
                     Some(Event::CursorsResult { peer: pid, cursors })
                 }
@@ -99,6 +107,7 @@ pub(crate) async fn run_op<C: TripleCodec>(
                     // the upstream to deliver nothing and FullClose.
                     let _ = s.write_all(&OfferClient::close_frame(refs.len())).await;
                     let _ = s.flush().await;
+                    let _ = s.close().await;
                     Some(Event::OfferResult {
                         peer: pid,
                         bin,
@@ -118,7 +127,9 @@ pub(crate) async fn run_op<C: TripleCodec>(
         } => {
             let mut s = open(ctrl, peer, PULLSYNC_PROTOCOL).await?;
             let mut client = FetchClient::new(bin, start, want);
-            let outcomes = match pump(&mut s, |inp| client.poll(codec, inp)).await {
+            let term = pump(&mut s, |inp| client.poll(codec, inp)).await;
+            let _ = s.close().await;
+            let outcomes = match term {
                 Some(ClientOut::FetchDone { outcomes }) => outcomes,
                 // stream ended before every delivery: the shell closes it, and
                 // unmet wants finalize as Missed (the adapter's shell signal).
@@ -164,7 +175,9 @@ pub async fn get_cursors(
 ) -> Option<Vec<(Bin, melissi_settlement::BinId)>> {
     let mut s = open(ctrl, peer, CURSORS_PROTOCOL).await?;
     let mut client = CursorsClient::new();
-    match pump(&mut s, |inp| client.poll(inp)).await? {
+    let term = pump(&mut s, |inp| client.poll(inp)).await;
+    let _ = s.close().await;
+    match term? {
         ClientOut::Cursors { cursors, .. } => Some(cursors),
         _ => None,
     }
