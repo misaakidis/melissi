@@ -9,6 +9,27 @@ discipline), `pullsync-optimal-client.md` (this node's scope). The TLA+ suite
 is the spec of record; every crate here is a refinement of a named spec, and the
 parity tests re-check the same ablation matrix on the shipped code.
 
+## The verified core
+
+The eleven crates fall into three rings. The middle ring — `machine`,
+`settlement`, `node` — *is* pull-sync; the rest is identity/wire plumbing around
+it and the harness that checks it.
+
+| ring | crates | what it is |
+|---|---|---|
+| **verified core** | `machine`, `settlement`, `node` | *what pull-sync is* |
+| identity & wire | `types`, `crypto`, `protobuf`, `overlay`, `wire`, `net` | *how it talks to bee* |
+| the harness | `sim`, `machine::explore` | *how we know it's right* |
+
+`machine` and `settlement` are 1:1 refinements of two named TLA+ specs
+(`PullSyncerE.tla`, `IntervalSettlement.tla`); `node` is the sans-io composition
+(events → effects) that wires them into a running puller. In one line: **the
+machine schedules, settlement remembers, the node composes** — and the same
+machine is model-checked over abstract `u32` ids and run over real `Triple`s
+against a live testnet bee. The spec ↔ Rust mapping is laid out line-for-line in
+[`docs/spec-mapping.md`](docs/spec-mapping.md); a talk outline is in
+[`docs/presentation.md`](docs/presentation.md).
+
 ## Crates
 
 | crate | refines | status |
