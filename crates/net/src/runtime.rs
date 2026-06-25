@@ -24,6 +24,7 @@
 use crate::handshake::Role;
 use crate::hive::{receive_peers, DiscoveredPeer, PEERS_PROTOCOL};
 use crate::transport::{run_handshake, HANDSHAKE_PROTOCOL};
+use crate::underlay::{ActivePeer, MelissiUnderlay, Underlay};
 use crate::BzzAddress;
 use libp2p::PeerId;
 use libp2p_stream::Control;
@@ -202,6 +203,30 @@ pub async fn assemble_and_pull<C: TripleCodec>(
         codec,
     };
     melissi_wire::session::drive(session, &mut runner).await;
+}
+
+/// The pull-sync **module**, expressed over any [`Underlay`]. Select the active
+/// peers in our reserve's tile (§4 locality, by proximity) and drive the verified
+/// `Session` across them — the operational `Composition`, carrier-agnostic. The
+/// same module rides melissi's own underlay, `ant-p2p`, or `vertex`; only the
+/// underlay below it changes. Returns once the puller quiesces.
+pub async fn pull<U: Underlay, C: TripleCodec>(
+    underlay: &U,
+    nbhd: &Neighbourhood,
+    session: &mut Session,
+    codec: &C,
+) {
+    // The supply tile: the underlay's live peers whose overlay is in our reserve.
+    let mut connected: Vec<(NodePeerId, PeerId)> = Vec::new();
+    let mut next: NodePeerId = 1;
+    for p in underlay.active_peers() {
+        if nbhd.is_neighbour(&p.overlay) {
+            connected.push((next, p.libp2p));
+            next += 1;
+        }
+    }
+    let mut ctrl = underlay.control();
+    assemble_and_pull(&mut ctrl, &connected, session, codec).await;
 }
 
 /// The remote address each connected peer was observed at — populated from
@@ -430,9 +455,9 @@ pub async fn run<C: TripleCodec>(
     if logging() {
         eprintln!("  · hive push: {} neighbours in our tile", neighbours.len());
     }
-    // 3. dial + handshake each neighbour; the connected ones are the supply.
-    let mut connected: Vec<(NodePeerId, PeerId)> = Vec::new();
-    let mut next: NodePeerId = 1;
+    // 3. dial + handshake each neighbour; the connected ones become the
+    //    underlay's active peers (the live supply).
+    let mut active: Vec<ActivePeer> = Vec::new();
     for n in &neighbours {
         let Ok(addr) = libp2p::Multiaddr::try_from(n.peer.underlay.clone()) else {
             continue;
@@ -449,12 +474,22 @@ pub async fn run<C: TripleCodec>(
         .await
         .is_some()
         {
-            connected.push((next, n.libp2p));
-            next += 1;
+            active.push(ActivePeer {
+                overlay: n.peer.overlay,
+                libp2p: n.libp2p,
+                full_node: true,
+            });
         }
     }
-    // 4. pull the reserve from the assembled neighbourhood.
-    assemble_and_pull(&mut ctrl, &connected, session, codec).await;
+    // 4. the underlay holds the active neighbourhood; the pull-sync MODULE rides
+    //    it (carrier-agnostic — swap in an ant-p2p / vertex underlay unchanged).
+    let underlay = MelissiUnderlay {
+        control: ctrl.clone(),
+        peers: active,
+        identity: mine.clone(),
+        network_id,
+    };
+    pull(&underlay, nbhd, session, codec).await;
 }
 
 /// Pull directly from a single **known** peer — no discovery. Dial it, handshake,
@@ -740,7 +775,7 @@ mod tests {
 
         // client: dial both neighbours, then assemble_and_pull.
         let mut cl = node();
-        let mut ctrl = cl.behaviour().stream.new_control();
+        let ctrl = cl.behaviour().stream.new_control();
         cl.dial(a_addr.with_p2p(a_peer).unwrap()).unwrap();
         cl.dial(b_addr.with_p2p(b_peer).unwrap()).unwrap();
         tokio::spawn(async move {
@@ -750,10 +785,41 @@ mod tests {
         });
 
         let mut session = Session::new(Node::new(Config::PRODUCTION, RADIUS));
-        let neighbours = [(1u8, a_peer), (2u8, b_peer)];
+        // Drive the verified pull through the MODULE over an `Underlay` — the same
+        // `pull` a future vertex / ant underlay would carry; here `MelissiUnderlay`
+        // is the underlay. Radius-0 tile keeps both peers as the supply.
+        let underlay = MelissiUnderlay {
+            control: ctrl,
+            peers: vec![
+                ActivePeer {
+                    overlay: [0u8; 32],
+                    libp2p: a_peer,
+                    full_node: true,
+                },
+                ActivePeer {
+                    overlay: [1u8; 32],
+                    libp2p: b_peer,
+                    full_node: true,
+                },
+            ],
+            identity: BzzAddress::new(
+                &[5u8; 32],
+                &"/ip4/127.0.0.1/tcp/0"
+                    .parse::<Multiaddr>()
+                    .unwrap()
+                    .to_vec(),
+                1,
+                [1u8; 32],
+                1_700_000_000,
+                [0u8; 20],
+            )
+            .unwrap(),
+            network_id: 1,
+        };
+        let nbhd = Neighbourhood::new([0u8; 32], 0);
         tokio::time::timeout(
             Duration::from_secs(20),
-            assemble_and_pull(&mut ctrl, &neighbours, &mut session, &client_codec),
+            pull(&underlay, &nbhd, &mut session, &client_codec),
         )
         .await
         .expect("pull timed out");

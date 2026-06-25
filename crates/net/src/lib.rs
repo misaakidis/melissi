@@ -45,6 +45,8 @@ pub mod runtime;
 pub mod swarm;
 #[cfg(feature = "libp2p")]
 pub mod transport;
+#[cfg(feature = "libp2p")]
+pub mod underlay;
 
 use melissi_crypto as crypto;
 use melissi_overlay::overlay_address;
