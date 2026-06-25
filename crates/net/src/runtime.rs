@@ -3,7 +3,7 @@
 //! (overlay) → connect (handshake) → pull (the `wire` `Session`). All async; the
 //! verified drivers stay sync.
 //!
-//! Two halves, meeting at the `Composition.tla` seam:
+//! The client side has two halves, meeting at the `Composition.tla` seam:
 //!   - **discover + select** — [`accept_hive_push`] receives a hive `peers` push
 //!     and [`select_neighbours`] keeps the peers whose proximity puts them in our
 //!     reserve's tile (`overlay::Neighbourhood::is_neighbour`, the §4 locality
@@ -14,6 +14,12 @@
 //!     neighbourhood, routing each scheduled op to its peer's connection and
 //!     failing over when one declines. The reserve fills from what the
 //!     neighbourhood collectively holds — `Completeness`, operationally.
+//!
+//! And a server side — [`serve`] — that makes the node *reachable*: it answers
+//! bee's dial-back handshake (the `Role::Responder` driver), without which bee
+//! marks us unreachable and never gossips to or serves us. [`run`] spawns both,
+//! so a single call is a complete, dial-back-ready node — the last code mile to
+//! a live pull (the remaining requirement, a routable address, is deployment).
 
 use crate::handshake::Role;
 use crate::hive::{receive_peers, DiscoveredPeer, PEERS_PROTOCOL};
@@ -260,9 +266,11 @@ fn observed_of(addrs: &PeerAddrs, peer: &PeerId) -> Vec<u8> {
 /// The **responder/server** side — what makes this node *reachable*. A new peer
 /// (bee) dials us back to classify our reachability; if it cannot complete a
 /// handshake against us we are marked unreachable and pruned, never gossiped to
-/// or served. This accept-loop answers: inbound handshakes run our verified
-/// [`Role::Responder`] driver; inbound hive pushes are received (gossip). It is
-/// long-running — spawn it; `addrs` is the map [`drive_swarm`] fills.
+/// or served. This long-running accept-loop answers inbound handshakes with our
+/// verified [`Role::Responder`] driver — the dial-back proof. Spawn it; `addrs`
+/// is the map [`drive_swarm`] fills (for the observed-underlay echo). It accepts
+/// the handshake protocol only; the hive `peers` push is the *client* side's
+/// (`run`) acceptor, so the two coexist on one swarm without contending.
 ///
 /// Reachability beyond the dial-back also needs a routable advertised underlay
 /// (a public address bee can reach), which is deployment, not code.
@@ -274,29 +282,24 @@ pub async fn serve(
     addrs: PeerAddrs,
 ) {
     use libp2p::futures::StreamExt;
-    let (mut hs_in, mut hive_in) = match (
-        server.accept(HANDSHAKE_PROTOCOL),
-        server.accept(PEERS_PROTOCOL),
-    ) {
-        (Ok(h), Ok(p)) => (h, p),
-        _ => return, // another acceptor already holds these protocols
+    let Ok(mut hs_in) = server.accept(HANDSHAKE_PROTOCOL) else {
+        return; // another acceptor already holds the handshake protocol
     };
-    loop {
-        tokio::select! {
-            Some((peer, mut s)) = hs_in.next() => {
-                let mine = mine.clone();
-                let observed = observed_of(&addrs, &peer);
-                tokio::spawn(async move {
-                    // answer the dial-back handshake (the reachability proof).
-                    let _ = run_handshake(&mut s, Role::Responder, &mine, network_id, full_node, observed).await;
-                });
-            }
-            Some((_peer, mut s)) = hive_in.next() => {
-                // a peer gossiped us its peers — receive + verify them.
-                let _ = receive_peers(&mut s, network_id).await;
-            }
-            else => break,
-        }
+    while let Some((peer, mut s)) = hs_in.next().await {
+        let mine = mine.clone();
+        let observed = observed_of(&addrs, &peer);
+        tokio::spawn(async move {
+            // answer the dial-back handshake (the reachability proof).
+            let _ = run_handshake(
+                &mut s,
+                Role::Responder,
+                &mine,
+                network_id,
+                full_node,
+                observed,
+            )
+            .await;
+        });
     }
 }
 
@@ -309,11 +312,15 @@ pub struct Identity<'a> {
     pub neighbourhood: &'a Neighbourhood,
 }
 
-/// The whole node, end to end — the operational `Composition`, threaded: dial the
-/// bootnode and handshake it, receive its hive push and SELECT the neighbours
-/// (our tile), dial + handshake each, then `assemble_and_pull` to fill the
-/// reserve. The caller owns the clock (bound this in a timeout); it returns when
-/// the puller quiesces or no neighbour is reachable. `bootnode` carries a `/p2p/`.
+/// The whole node, end to end — the operational `Composition`, threaded. It
+/// spawns the [`serve`] responder (so we are reachable — bee can dial us back),
+/// then as a client: dial the bootnode and handshake it, receive its hive push
+/// and SELECT the neighbours (our tile), dial + handshake each, and
+/// `assemble_and_pull` to fill the reserve. The caller owns the clock (bound
+/// this in a timeout); it returns when the puller quiesces or no neighbour is
+/// reachable. `bootnode` carries a `/p2p/`. A reachable advertised underlay (a
+/// public address bee can dial) is the one remaining requirement, and it is
+/// deployment, not code.
 pub async fn run<C: TripleCodec>(
     swarm: libp2p::Swarm<libp2p_stream::Behaviour>,
     bootnode: libp2p::Multiaddr,
@@ -324,13 +331,24 @@ pub async fn run<C: TripleCodec>(
     let (mine, network_id, full_node, nbhd) =
         (id.bzz, id.network_id, id.full_node, id.neighbourhood);
     let mut ctrl = swarm.behaviour().new_control();
+    let serve_ctrl = swarm.behaviour().new_control();
     let Some(boot_peer) = peer_of(&bootnode) else {
         return;
     };
     let (dial_tx, dial_rx) = tokio::sync::mpsc::unbounded_channel();
     let _ = dial_tx.send(bootnode.clone());
     let addrs: PeerAddrs = Default::default();
-    tokio::spawn(drive_swarm(swarm, dial_rx, addrs));
+    tokio::spawn(drive_swarm(swarm, dial_rx, addrs.clone()));
+    // be reachable: answer bee's dial-back handshake (the responder side), so we
+    // are classified Public and kept/gossiped/served. Coexists with the client
+    // acceptors below (handshake protocol vs the hive/pullsync we open).
+    tokio::spawn(serve(
+        serve_ctrl,
+        mine.clone(),
+        network_id,
+        full_node,
+        addrs.clone(),
+    ));
 
     // 1. handshake the bootnode (bee serves discovery only to handshaked peers).
     if handshake_neighbour(
@@ -798,7 +816,7 @@ mod tests {
                 Role::Initiator,
                 &mine,
                 TESTNET,
-                false,
+                true, // present as a full node — bee may gossip to full nodes
                 addr.to_vec(),
             )
             .await
