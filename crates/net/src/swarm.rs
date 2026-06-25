@@ -58,6 +58,97 @@ pub async fn build_swarm_wss() -> Swarm<Behaviour> {
         .build()
 }
 
+/// The composed behaviour for a reachable node: the stream protocols plus a UPnP
+/// client that maps our listen port on the router and reports the external
+/// address. Only the `upnp` member is new — `stream` is the same byte-stream
+/// behaviour every other build uses; the `Control` comes from `behaviour().stream`.
+#[cfg(feature = "upnp")]
+#[derive(libp2p::swarm::NetworkBehaviour)]
+pub struct NodeBehaviour {
+    pub stream: Behaviour,
+    pub upnp: libp2p::upnp::tokio::Behaviour,
+}
+
+/// As [`build_swarm`], plus a UPnP-IGD client. When the node listens, UPnP asks
+/// the gateway to port-map and emits `upnp::Event::NewExternalAddr` with our
+/// routable address — the underlay we then advertise for bee's dial-back. Falls
+/// back silently (`GatewayNotFound`/`NonRoutableGateway`) where UPnP is absent.
+#[cfg(feature = "upnp")]
+pub fn build_swarm_upnp() -> Swarm<NodeBehaviour> {
+    libp2p::SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            libp2p::tcp::Config::default(),
+            libp2p::noise::Config::new,
+            libp2p::yamux::Config::default,
+        )
+        .expect("tcp transport")
+        .with_dns()
+        .expect("dns resolver")
+        .with_behaviour(|_| NodeBehaviour {
+            stream: Behaviour::new(),
+            upnp: libp2p::upnp::tokio::Behaviour::default(),
+        })
+        .expect("composed behaviour")
+        .build()
+}
+
+#[cfg(all(test, feature = "upnp"))]
+mod upnp_tests {
+    use super::*;
+    use libp2p::futures::StreamExt;
+    use libp2p::swarm::SwarmEvent;
+    use std::time::Duration;
+
+    /// Live reachability probe: will this network's gateway grant a UPnP port
+    /// map and report our external address? Listens, runs UPnP, prints the
+    /// verdict. This is the cheap precondition check for the whole port-forward
+    /// path — if UPnP yields an external addr, the node can advertise it as the
+    /// dial-back underlay with no manual router config. `#[ignore]`d (depends on
+    /// the local router). Run:
+    ///
+    /// ```text
+    /// cargo test -p melissi-net --features upnp upnp_probe_external_addr -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn upnp_probe_external_addr() {
+        let mut sw = build_swarm_upnp();
+        sw.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+            .expect("listen");
+        let verdict = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let SwarmEvent::Behaviour(NodeBehaviourEvent::Upnp(ev)) =
+                    sw.select_next_some().await
+                {
+                    use libp2p::upnp::Event::*;
+                    match ev {
+                        NewExternalAddr(addr) => {
+                            return format!(
+                                "✓ UPnP external addr {addr} — reachable; advertise this as the dial-back underlay"
+                            )
+                        }
+                        GatewayNotFound => {
+                            return "· no UPnP gateway (router has UPnP-IGD off or absent)".to_string()
+                        }
+                        NonRoutableGateway => {
+                            return "· gateway found but non-routable (CGNAT / double-NAT) — UPnP cannot help".to_string()
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        })
+        .await;
+        match verdict {
+            Ok(v) => eprintln!("{v}"),
+            Err(_) => eprintln!(
+                "· no UPnP verdict in 20s (gateway slow/unresponsive — treat as unavailable)"
+            ),
+        }
+    }
+}
+
 #[cfg(all(test, feature = "wss"))]
 mod tests {
     // The WSS leg constructs and multiplexes with TCP. No dial — live interop is

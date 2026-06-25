@@ -16,6 +16,10 @@ libp2p = ["dep:libp2p", "dep:libp2p-stream", "dep:tokio", "dep:futures", "dep:hi
 # A WebSocket-Secure transport leg alongside TCP (`swarm::build_swarm_wss`). The
 # stream protocols above the connection are unchanged — see `swarm`.
 wss = ["libp2p", "libp2p/websocket"]
+# Automatic NAT traversal: ask the router (UPnP-IGD) to port-map our listen port
+# and report our routable external address (`swarm::build_swarm_upnp`), the
+# underlay bee dials back. Composes a upnp behaviour alongside the stream one.
+upnp = ["libp2p", "libp2p/upnp", "libp2p/macros"]
 
 [dependencies]
 melissi-types = { path = "../types" }
