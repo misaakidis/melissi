@@ -177,6 +177,58 @@ pub async fn tcp_bootnodes(network_id: u64) -> Result<Vec<libp2p::Multiaddr>, Dn
     Ok(dialable)
 }
 
+/// Resolve a network's bootnode dnsaddr to the **WebSocket-Secure** variants —
+/// the `…/tls/sni/<host>.libp2p.direct/ws/p2p/` AutoTLS endpoints bee publishes
+/// alongside the raw-TCP ones. These are the node class that bootstraps browser /
+/// light clients; a `wss`-enabled node ([`crate::swarm::build_swarm_wss`]) dials
+/// them. `None` network id, or no WSS bootnode, is an error.
+#[cfg(feature = "libp2p")]
+pub async fn wss_bootnodes(network_id: u64) -> Result<Vec<libp2p::Multiaddr>, DnsAddrError> {
+    let apex = apex_for(network_id).ok_or(DnsAddrError::NoAddresses)?;
+    let dialable: Vec<libp2p::Multiaddr> = resolve(apex)
+        .await?
+        .into_iter()
+        .filter_map(|a| to_rust_wss(&a))
+        .collect();
+    if dialable.is_empty() {
+        return Err(DnsAddrError::NoAddresses);
+    }
+    Ok(dialable)
+}
+
+/// Rewrite bee's go-libp2p AutoTLS WSS multiaddr into the form rust-libp2p's
+/// websocket transport dials. bee advertises `/ip4/IP/tcp/PORT/tls/sni/<host>/ws/
+/// p2p/ID`, where `<host>` (`…libp2p.direct`) is a real DNS name resolving to IP
+/// with a valid cert. rust-libp2p doesn't dial the `/tls/sni/<host>/ws` layout,
+/// but it dials `/dns4/<host>/tcp/PORT/tls/ws/p2p/ID` — same endpoint, TLS keyed
+/// on the same SNI host. Returns `None` for any non-`/ws` (raw TCP) address.
+#[cfg(feature = "libp2p")]
+fn to_rust_wss(a: &libp2p::Multiaddr) -> Option<libp2p::Multiaddr> {
+    use libp2p::multiaddr::Protocol;
+    let (mut port, mut sni, mut id) = (None, None, None);
+    let mut is_ws = false;
+    for p in a.iter() {
+        match p {
+            Protocol::Tcp(n) => port = Some(n),
+            Protocol::Sni(h) => sni = Some(h.to_string()),
+            Protocol::Ws(_) => is_ws = true,
+            Protocol::P2p(pid) => id = Some(pid),
+            _ => {}
+        }
+    }
+    if !is_ws {
+        return None;
+    }
+    let (port, sni, id) = (port?, sni?, id?);
+    let mut out = libp2p::Multiaddr::empty();
+    out.push(Protocol::Dns4(sni.into()));
+    out.push(Protocol::Tcp(port));
+    out.push(Protocol::Tls);
+    out.push(Protocol::Ws(std::borrow::Cow::Borrowed("/")));
+    out.push(Protocol::P2p(id));
+    Some(out)
+}
+
 /// The production TXT lookup: query `name`'s TXT records with the system
 /// resolver. A TXT record is one or more character-strings; we concatenate them
 /// (bee's `dnsaddr=...` fits in one, but joining is the correct general form).

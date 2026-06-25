@@ -1147,4 +1147,104 @@ mod tests {
             None => eprintln!("  · neighbour negotiated cursors but returned none"),
         }
     }
+
+    /// WSS bootstrap probe — dial bee's `libp2p.direct` WSS bootnode (the node
+    /// class that bootstraps browser/light clients) as a LIGHT node, and watch
+    /// whether bee gossips peers to us (the weeb-3 path, surviving the prune that
+    /// cut us over TCP) or resets us anyway. The decisive test of whether WSS is
+    /// the way in. `#[ignore]`d (network + `wss` feature + ~2-minute watch):
+    ///
+    /// ```text
+    /// cargo test -p melissi-net --features wss live_testnet_wss_bootstrap -- --ignored --nocapture
+    /// ```
+    #[cfg(feature = "wss")]
+    #[tokio::test]
+    #[ignore]
+    async fn live_testnet_wss_bootstrap() {
+        const TESTNET: u64 = 10;
+        let addr = crate::dnsaddr::wss_bootnodes(TESTNET)
+            .await
+            .expect("resolve WSS bootnode")
+            .into_iter()
+            .next()
+            .unwrap();
+        let boot = peer_of(&addr).unwrap();
+        eprintln!("· WSS bootnode {addr}");
+
+        let secret = [0x5au8; 32];
+        let mine = BzzAddress::new(
+            &secret,
+            &"/ip4/127.0.0.1/tcp/1634"
+                .parse::<Multiaddr>()
+                .unwrap()
+                .to_vec(),
+            TESTNET,
+            [0x11; 32],
+            1_700_000_000,
+            [0u8; 20],
+        )
+        .unwrap();
+
+        let key = libp2p::identity::Keypair::generate_ed25519();
+        let mut sw = crate::swarm::build_swarm_wss_with_key(key).await;
+        let mut ctrl = sw.behaviour().new_control();
+        let mut hive_in = ctrl.accept(PEERS_PROTOCOL).unwrap();
+        let (closed_tx, mut closed_rx) = tokio::sync::mpsc::channel::<String>(4);
+        sw.dial(addr.clone()).unwrap();
+        tokio::spawn(async move {
+            loop {
+                match sw.select_next_some().await {
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        eprintln!("  ✓ WSS connection established to {peer_id}")
+                    }
+                    SwarmEvent::ConnectionClosed { peer_id, cause, .. } if peer_id == boot => {
+                        let _ = closed_tx.send(format!("{cause:?}")).await;
+                    }
+                    SwarmEvent::OutgoingConnectionError { error, .. } => {
+                        eprintln!("  ✗ WSS dial error: {error}")
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // present as a LIGHT node (full_node=false), as weeb-3 does.
+        let Some(mut hs) = open_stream(&mut ctrl, boot, HANDSHAKE_PROTOCOL).await else {
+            eprintln!("· could not open handshake stream (WSS/TLS dial failed?)");
+            return;
+        };
+        if run_handshake(
+            &mut hs,
+            Role::Initiator,
+            &mine,
+            TESTNET,
+            false,
+            addr.to_vec(),
+        )
+        .await
+        .is_none()
+        {
+            eprintln!("· WSS handshake failed");
+            return;
+        }
+        eprintln!(
+            "✓ handshaked the WSS bootnode as a LIGHT node; watching ≤120s for gossip / reset…"
+        );
+
+        tokio::select! {
+            push = hive_in.next() => match push {
+                Some((_p, mut s)) => {
+                    let peers = receive_peers(&mut s, TESTNET).await;
+                    eprintln!("✓ GOSSIP over WSS: bee pushed {} peers — WSS bootstrap is the way past the prune", peers.len());
+                }
+                None => eprintln!("· hive stream opened then closed empty"),
+            },
+            closed = closed_rx.recv() => {
+                eprintln!("· bee CLOSED the WSS connection ({}) — even a WSS light peer is pruned", closed.unwrap_or_default())
+            }
+            _ = tokio::time::sleep(Duration::from_secs(120)) => {
+                eprintln!("· 120s: connected, no gossip, not reset — kept but silent (gossip on the ~15-min timer)")
+            }
+        }
+    }
 }

@@ -49,7 +49,16 @@ pub fn build_swarm_with_key(key: libp2p::identity::Keypair) -> Swarm<Behaviour> 
 /// everything above the connection is unchanged.
 #[cfg(feature = "wss")]
 pub async fn build_swarm_wss() -> Swarm<Behaviour> {
-    libp2p::SwarmBuilder::with_new_identity()
+    build_swarm_wss_with_key(libp2p::identity::Keypair::generate_ed25519()).await
+}
+
+/// As [`build_swarm_wss`], with a given libp2p identity (see
+/// [`build_swarm_with_key`] for why a reachable / advertised node needs a fixed
+/// key). Carries both TCP and WSS legs, so peers discovered over WSS that
+/// advertise a TCP underlay are still dialable.
+#[cfg(feature = "wss")]
+pub async fn build_swarm_wss_with_key(key: libp2p::identity::Keypair) -> Swarm<Behaviour> {
+    libp2p::SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
             libp2p::tcp::Config::default(),
