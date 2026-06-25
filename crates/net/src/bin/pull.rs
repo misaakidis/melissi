@@ -122,7 +122,13 @@ async fn main() {
             [0u8; 20],
         )
         .unwrap();
-        let swarm = build_swarm_with_key(key);
+        let mut swarm = build_swarm_with_key(key);
+        // Listen so bee learns a real address for us and persists our overlay
+        // (else it Resets our pull-sync streams). Advertise MELISSI_UNDERLAY as a
+        // routable address the peer can dial back (a LAN/public IP, not loopback).
+        swarm
+            .listen_on(format!("/ip4/0.0.0.0/tcp/{listen_port}").parse().unwrap())
+            .expect("listen");
         let mut session = Session::new(Node::new(Config::PRODUCTION, radius));
         let codec = PullCodec;
         let _ = tokio::time::timeout(

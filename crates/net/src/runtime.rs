@@ -542,9 +542,25 @@ pub async fn pull_direct<C: TripleCodec>(
     let Some(peer) = peer_of(&peer_addr) else {
         return;
     };
+    // Accept bee's pricing announcement (its post-handshake ConnectIn), or bee
+    // disconnects us and never registers our overlay — Resetting every later
+    // pull-sync stream. Live before the handshake so the acceptor is ready.
+    tokio::spawn(crate::pricing::serve_pricing(
+        swarm.behaviour().new_control(),
+    ));
+    // Answer bee's dial-back (the responder) so bee learns a real listen address
+    // for us and PERSISTS our overlay — without it bee Resets our pull-sync
+    // streams with "overlay address for peer not found". The caller listens.
+    let addrs: PeerAddrs = Default::default();
+    tokio::spawn(serve(
+        swarm.behaviour().new_control(),
+        mine.clone(),
+        network_id,
+        full_node,
+        addrs.clone(),
+    ));
     let (dial_tx, dial_rx) = tokio::sync::mpsc::unbounded_channel();
     let _ = dial_tx.send(peer_addr.clone());
-    let addrs: PeerAddrs = Default::default();
     tokio::spawn(drive_swarm(swarm, dial_rx, addrs.clone()));
     if handshake_neighbour(
         &mut ctrl,

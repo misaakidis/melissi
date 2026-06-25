@@ -36,6 +36,8 @@ pub mod handshake;
 pub mod hive;
 pub mod pb;
 #[cfg(feature = "libp2p")]
+pub mod pricing;
+#[cfg(feature = "libp2p")]
 pub mod pullsync;
 #[cfg(feature = "libp2p")]
 pub mod runtime;
