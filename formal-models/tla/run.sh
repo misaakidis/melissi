@@ -44,6 +44,31 @@ neg() {  # $1 config, $2 expected-violated property name
   fi
 }
 
+# Coverage self-audit (model tracking): the spec<->config map is otherwise only
+# convention. Before running anything, assert (1) every MC_*.cfg on disk is
+# wired to a pos/neg line, and (2) every companion spec (*.tla that is not an
+# MC_) is INSTANCE'd by >=1 wired config. Either drift is SUITE RED, loudly —
+# so a model added without being exercised, or a config left un-run, is caught.
+audit() {
+  local self afail=0 refs m spec covered
+  self="$(basename "$0")"
+  refs=$(grep -oE '^(pos|neg) +MC_[A-Za-z_]+' "$self" | awk '{print $2}' | sort -u)
+  for cfg in MC_*.cfg; do
+    m=${cfg%.cfg}
+    grep -qx "$m" <<<"$refs" || { echo "AUDIT FAIL: $cfg on disk but no pos/neg line runs it"; afail=1; }
+  done
+  for spec in $(ls *.tla | grep -v '^MC_' | sed 's/\.tla$//'); do
+    covered=0
+    for m in $refs; do
+      [ -f "$m.tla" ] && grep -q "INSTANCE $spec\b" "$m.tla" && { covered=1; break; }
+    done
+    [ "$covered" = 1 ] || { echo "AUDIT FAIL: spec $spec.tla is exercised by no config run here"; afail=1; }
+  done
+  if [ "$afail" -ne 0 ]; then echo "SUITE RED (coverage audit)"; exit 1; fi
+  echo "audit ok: $(ls *.tla | grep -vc '^MC_') companion specs, $(wc -w <<<"$refs") configs, every spec exercised and every config wired"
+}
+audit
+
 echo "== positives =="
 pos MC_base
 pos MC_partial
@@ -63,6 +88,8 @@ pos MC_pacing             # adverts = justifications (AdvertBound) and coverage 
 pos MC_pacing_griefed     # §6.2: instantly-empty answers cannot extort adverts beyond the floor
 echo "== neighbourhood supply (discharges pull-sync's supply premise; companion Neighbourhood.tla) =="
 pos MC_nhood              # discovery finds the tile; the node connects every honest neighbour (the supply)
+echo "== composition (supply (+) scheduling => complete reserve; companion Composition.tla) =="
+pos MC_compose           # full honest supply assembled -> reserve completes (Byzantine tolerated, holdings spread)
 echo "== no-barrier windowed scheduling (companions DiscoveryBarrier.tla / WindowedLoad.tla) =="
 pos MC_barrier_off        # no barrier: honest holders scheduled despite a withholder, with NO timeout
 pos MC_barrier            # barrier + per-lister timeout drains (a scarce budget would not -- misattribution)
@@ -81,6 +108,7 @@ neg MC_settlement_noreject AdvanceComplete  # rejections don't settle -> resume 
 neg MC_respawn             AdvertBound      # unpaced re-advert -> the empty-offer respawn busy-loop
 neg MC_nhood_nogossip  DiscoveryFinds       # no feedback -> never learns past the bootstrap peer
 neg MC_nhood_noconnect SupplyComplete       # connect only the seed -> single-source supply (§5.1)
+neg MC_compose_single  Completeness         # single-source supply -> a chunk the seed lacks never completes
 neg MC_barrier_wedge Progress      # barrier without timeout -> one withholder wedges the whole bin
 neg MC_staggered     SkewBound     # staggered discovery -> a late offerer starts behind, skew tracks the head-start
 echo
